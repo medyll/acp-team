@@ -2,7 +2,7 @@
   "mcpServers": {
     "acp-team": {
       "command": "node",
-      "args": ["D:\\development\\acp-team\\src\\mcp-server.js"],
+      "args": ["src/mcp-server.js"],
       "env": {
         "KIMI_BRIDGE_MODE": "auto",
         "KIMI_BRIDGE_PERMISSION": "allow",
