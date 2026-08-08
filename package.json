@@ -1,0 +1,21 @@
+{
+  "name": "acp-team",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "One MCP server that lets Claude Code delegate work to other coding agents (Kimi over ACP, Codex over `codex exec`) through a single uniform interface.",
+  "bin": {
+    "acp-team": "src/mcp-server.js"
+  },
+  "scripts": {
+    "start": "node src/mcp-server.js",
+    "test": "node src/mcp-smoke-test.js",
+    "test:kimi": "node src/agents/kimi/kimi-smoke-test.js",
+    "test:kimi:adapter": "node src/agents/kimi/kimi-adapter-test.js",
+    "test:codex": "node src/agents/codex/codex-smoke-test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.24.1",
+    "zod": "^3.25.76"
+  }
+}
