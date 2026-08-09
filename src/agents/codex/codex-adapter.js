@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { MODES, toolSummary } from "../agent.js";
+import { createSessionQueue } from "../session-queue.js";
 
 const CODEX_BIN = process.env.CODEX_BIN || (process.platform === "win32" ? "codex.exe" : "codex");
 const SKIP_GIT_CHECK = process.env.CODEX_BRIDGE_SKIP_GIT_CHECK !== "false";
@@ -20,6 +21,7 @@ const SKIP_GIT_CHECK = process.env.CODEX_BRIDGE_SKIP_GIT_CHECK !== "false";
 export function createCodexAdapter({ defaultModel, defaultMode, log }) {
   /** cwd -> thread_id */
   const sessions = new Map();
+  const queue = createSessionQueue();
   /** Turns currently running: ChildProcess -> { cwd, threadId }. Needed because a
    *  turn is a process, so cancelling and shutting down mean killing it. */
   const live = new Map();
@@ -103,7 +105,16 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
         fn(arg);
       };
 
-      proc.on("error", (e) => settle(reject, e));
+      proc.on("error", (e) =>
+        settle(
+          reject,
+          e.code === "ENOENT"
+            ? new Error(
+                `Codex CLI not found (tried "${CODEX_BIN}"). Install it and run \`codex login\`, or set CODEX_BIN to its path.`
+              )
+            : e
+        )
+      );
       proc.on("close", (code) => {
         if (code !== 0) {
           const detail = errors.join("; ") || stderr.trim() || "no output";
@@ -140,13 +151,15 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
     },
 
     async ask({ prompt, cwd, sessionId, newSession, model, mode, options }) {
-      const threadId = sessionId ?? (newSession ? null : sessions.get(cwd) ?? null);
-      const res = await runExec({ prompt, cwd, threadId, model, mode, options });
-      if (res.sessionId) {
-        sessions.set(cwd, res.sessionId);
-        if (!threadId) log(`codex: new thread ${res.sessionId} (cwd=${cwd})`);
-      }
-      return res;
+      return queue.run(sessionId ?? sessions.get(cwd) ?? cwd, async () => {
+        const threadId = sessionId ?? (newSession ? null : sessions.get(cwd) ?? null);
+        const res = await runExec({ prompt, cwd, threadId, model, mode, options });
+        if (res.sessionId) {
+          sessions.set(cwd, res.sessionId);
+          if (!threadId) log(`codex: new thread ${res.sessionId} (cwd=${cwd})`);
+        }
+        return res;
+      });
     },
 
     cancel(sessionId) {

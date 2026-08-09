@@ -36,6 +36,20 @@ export class KimiAcpClient {
 
   async #start() {
     this.proc = spawn(KIMI_BIN, ["acp"], { stdio: ["pipe", "pipe", "pipe"] });
+    // A missing binary surfaces here, not as a throw; without this the caller
+    // would only see a request that never resolves.
+    this.proc.on("error", (e) => {
+      const err =
+        e.code === "ENOENT"
+          ? new Error(
+              `Kimi CLI not found (tried "${KIMI_BIN}"). Install it and run \`kimi login\`, or set KIMI_BIN to its path.`
+            )
+          : e;
+      for (const { reject } of this.pending.values()) reject(err);
+      this.pending.clear();
+      this.proc = null;
+      this.startPromise = null;
+    });
     this.proc.on("exit", (code, signal) => {
       const err = new Error(`kimi acp exited (code=${code} signal=${signal})`);
       for (const { reject } of this.pending.values()) reject(err);

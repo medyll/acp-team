@@ -6,19 +6,36 @@ import { createCodexAdapter } from "./codex/codex-adapter.js";
  * folder under src/agents/ and one line here.
  */
 export function createRegistry({ log }) {
-  const adapters = [
-    createKimiAdapter({
-      defaultModel: process.env.KIMI_BRIDGE_MODEL,
-      defaultMode: process.env.KIMI_BRIDGE_MODE || "auto",
-      permissionPolicy: process.env.KIMI_BRIDGE_PERMISSION || "allow",
-      log
-    }),
-    createCodexAdapter({
-      defaultModel: process.env.CODEX_BRIDGE_MODEL,
-      defaultMode: process.env.CODEX_BRIDGE_MODE || "default",
-      log
-    })
-  ];
+  const builders = {
+    kimi: () =>
+      createKimiAdapter({
+        defaultModel: process.env.KIMI_BRIDGE_MODEL,
+        defaultMode: process.env.KIMI_BRIDGE_MODE || "auto",
+        permissionPolicy: process.env.KIMI_BRIDGE_PERMISSION || "allow",
+        log
+      }),
+    codex: () =>
+      createCodexAdapter({
+        defaultModel: process.env.CODEX_BRIDGE_MODEL,
+        defaultMode: process.env.CODEX_BRIDGE_MODE || "default",
+        log
+      })
+  };
+
+  // Installing every CLI is optional: AGENT_BRIDGE_AGENTS narrows the roster so a
+  // host only ever sees agents that can actually answer.
+  const requested = (process.env.AGENT_BRIDGE_AGENTS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const unknown = requested.filter((id) => !builders[id]);
+  if (unknown.length) {
+    throw new Error(
+      `AGENT_BRIDGE_AGENTS lists unknown agent(s): ${unknown.join(", ")}. Known: ${Object.keys(builders).join(", ")}`
+    );
+  }
+  const enabled = requested.length ? requested : Object.keys(builders);
+  const adapters = enabled.map((id) => builders[id]());
 
   const byId = new Map(adapters.map((a) => [a.id, a]));
 

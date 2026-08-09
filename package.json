@@ -1,18 +1,41 @@
 {
-  "name": "acp-team",
+  "name": "@medyll/acp-team",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
-  "description": "One MCP server that lets Claude Code delegate work to other coding agents (Kimi over ACP, Codex over `codex exec`) through a single uniform interface.",
+  "description": "MCP server that lets any MCP host delegate coding work to other agents — Kimi over ACP, Codex over `codex exec` — through one uniform interface.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "acp",
+    "agent-client-protocol",
+    "claude-code",
+    "kimi",
+    "codex",
+    "agent",
+    "multi-agent"
+  ],
+  "license": "MIT",
+  "author": "Meddy Lebrun",
   "bin": {
     "acp-team": "src/mcp-server.js"
   },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "start": "node src/mcp-server.js",
-    "test": "node src/mcp-smoke-test.js",
-    "test:kimi": "node src/agents/kimi/kimi-smoke-test.js",
-    "test:kimi:adapter": "node src/agents/kimi/kimi-adapter-test.js",
-    "test:codex": "node src/agents/codex/codex-smoke-test.js"
+    "test": "node --test --test-concurrency=1 --test-timeout=5000 src/agents/session-queue.test.js src/agents/kimi/kimi-adapter.queue.test.js",
+    "test:smoke": "node src/mcp-smoke-test.js",
+    "test:smoke:kimi": "node src/agents/kimi/kimi-smoke-test.js",
+    "test:smoke:kimi-adapter": "node src/agents/kimi/kimi-adapter-test.js",
+    "test:smoke:codex": "node src/agents/codex/codex-smoke-test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.1",

@@ -103,26 +103,67 @@ decided to let an agent execute.
 
 ## Install
 
+Nothing to install ahead of time — `npx` fetches the bridge on first use:
+
 ```bash
-npm install
+npx -y @medyll/acp-team
 ```
 
-`kimi` and `codex` must be on PATH and authenticated. Override binaries with
-`KIMI_BIN` / `CODEX_BIN`.
-
-## Register with Claude Code
-
-`.mcp.json` in this repo already declares the server. Elsewhere:
+Or install it once, globally:
 
 ```bash
-claude mcp add acp-team -- node D:\development\acp-team\src\mcp-server.js
+npm install -g @medyll/acp-team
+```
+
+What you *do* need is the agents themselves: the `kimi` and `codex` CLIs on PATH
+and authenticated (`kimi login`, `codex login`). Point `KIMI_BIN` / `CODEX_BIN`
+elsewhere if they are not on PATH. Only have one of them? See
+`AGENT_BRIDGE_AGENTS` below — the bridge then advertises only that one, instead
+of offering an agent that cannot answer.
+
+## Use it from any project
+
+Register the bridge once for every project (Claude Code "user" scope):
+
+```bash
+claude mcp add acp-team -s user -- npx -y @medyll/acp-team
+```
+
+The bridge always works in the project you are currently in. An MCP host starts
+one server per session with that session's working directory, and the bridge
+takes its default `cwd` from there — no configuration per project, no path to
+update. `agent_ask` also accepts an explicit `cwd`, and sessions are tracked per
+working directory, so one bridge can drive several projects at once.
+
+To pin it to a single project instead, commit a `.mcp.json` at the project root:
+
+```json
+{
+  "mcpServers": {
+    "acp-team": {
+      "command": "npx",
+      "args": ["-y", "@medyll/acp-team"]
+    }
+  }
+}
+```
+
+## Other MCP hosts
+
+Nothing here is Claude Code specific — this is a plain stdio MCP server. Any host
+that speaks MCP can run `npx -y @medyll/acp-team` and get the same four tools.
+Codex itself is one such host:
+
+```bash
+codex mcp add acp-team -- npx -y @medyll/acp-team
 ```
 
 ## Environment
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `AGENT_BRIDGE_CWD` | process cwd | Working directory given to new sessions |
+| `AGENT_BRIDGE_AGENTS` | all of them | Comma-separated roster, e.g. `codex`. Anything not listed is not advertised at all |
+| `AGENT_BRIDGE_CWD` | process cwd | Working directory given to new sessions. Leave unset — the default already follows the host session's project |
 | `KIMI_BIN` | `kimi.exe` / `kimi` | Kimi binary |
 | `KIMI_BRIDGE_MODEL` | agent default (K2.7 Coding) | Model for new kimi sessions |
 | `KIMI_BRIDGE_MODE` | `auto` | Default kimi mode |
