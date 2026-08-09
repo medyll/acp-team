@@ -1,141 +1,33 @@
 # acp-team
 
-One MCP server that lets Claude Code hand work to other coding agents through a
-single uniform interface. Each agent gets an adapter; the transport underneath is
-whatever that agent actually speaks.
+Delegate coding work to other agents from inside your own.
 
-```
-                                  +--(ACP / JSON-RPC over stdio)--> [ kimi acp ]
-[ Claude Code ] --(MCP/stdio)--> [ acp-team ]
-                                  +--(`codex exec --json`, JSONL)--> [ codex ]
-```
+`acp-team` is an MCP server that puts Kimi and Codex behind one tool. Ask either
+of them a question, hand either of them a task, and get back the same shape of
+answer. They run in your project, with their own file and shell tools, and report
+what they did.
 
-Claude Code stays an MCP host. Agents run their own tools — file reads/writes,
-shell — inside the working directory the bridge hands them.
-
-## Tools
-
-| Tool | What it does |
-| --- | --- |
-| `agent_ask` | Delegate a prompt. Params: `agent`, `prompt`, `cwd`, `session_id`, `new_session`, `model`, `mode`, `thinking`, `options`, `include_thoughts`. |
-| `agent_list` | Which agents exist, what each is good for, which modes they accept. |
-| `agent_status` | Transport, version, models, defaults, open sessions — one agent or all. |
-| `agent_cancel` | Cancel a running turn (agents with long-lived sessions only). |
-
-Every agent returns the same shape: final text, a summary of the tools it ran,
-optional reasoning, plus its session id.
-
-Sessions are kept **per agent per working directory**, so repeated `agent_ask`
-calls continue the same conversation. `session_id` targets an explicit one,
-`new_session: true` starts fresh.
-
-## Agents
-
-### kimi — Kimi Code CLI over ACP
-
-Verified against Kimi Code CLI `0.33.0`, ACP protocol `1`.
-Models: `kimi-code/kimi-for-coding` (K2.7), `kimi-code/kimi-for-coding-highspeed`,
-`kimi-code/k3-256k`, `kimi-code/k3`.
-
-One long-lived `kimi acp` process backs every session; sessions are real ACP
-sessions, so state lives inside the agent. Supports `thinking` and `agent_cancel`.
-
-Requires `kimi` on PATH and logged in (`kimi login`). Auth is OAuth-based and
-lives inside Kimi, not in ACP — the bridge never sees a credential. If the token
-expires, `session/new` fails and you re-run `kimi login`.
-
-### codex — OpenAI Codex CLI via `codex exec`
-
-Verified against Codex CLI `0.145.0`. Codex has **no ACP support** (no `codex acp`
-subcommand), so the adapter drives `codex exec --json` — one process per turn,
-JSONL events on stdout — and resumes conversations by thread id.
-
-Consequences of that transport:
-- No `agent_cancel`; each turn is a short-lived process.
-- No `thinking` parameter.
-- `mode` selects a sandbox policy rather than an approval policy, because
-  `exec` is non-interactive and nobody is there to approve anything.
-
-## Choosing a model and its settings
-
-Three levels, most local first.
-
-**Per call** — `model`, `mode`, `thinking` on `agent_ask`. A model set this way
-sticks to the session, so later turns in the same cwd keep it.
-
-```json
-{ "agent": "kimi", "prompt": "...", "model": "kimi-code/k3", "thinking": "high" }
-{ "agent": "codex", "prompt": "...", "model": "gpt-5.6-sol" }
-```
-
-**Anything else the agent supports** — the free-form `options` map:
-
-```json
-{ "agent": "codex", "prompt": "...", "options": { "model_reasoning_effort": "high", "model_verbosity": "low" } }
-{ "agent": "kimi",  "prompt": "...", "options": { "thinking": "max" } }
-```
-
-For codex these become `-c key=value` overrides, the same keys `~/.codex/config.toml`
-accepts; values are TOML, and the adapter quotes strings for you. For kimi they
-become `session/set_config_option` calls, validated against the option list that
-session currently advertises — a bad value is refused before it is sent, with the
-legal values in the message.
-
-Kimi's `thinking` list depends on the selected model, so `options` are applied
-after the model, not before.
-
-**Defaults** — `KIMI_BRIDGE_MODEL`, `CODEX_BRIDGE_MODEL` and friends in `.mcp.json`.
-
-**Agent's own config** — `~/.codex/config.toml`, Kimi's `config.toml`. Whatever the
-bridge does not override is inherited from there.
-
-## Modes
-
-| Mode | kimi | codex |
-| --- | --- | --- |
-| `plan` | ACP mode `plan`, read-only | `-c sandbox_mode="read-only"` |
-| `default` | ACP mode `default` | `-c sandbox_mode="workspace-write"` |
-| `auto` | ACP mode `auto` | same as `default` |
-| `yolo` | ACP mode `yolo` | `--dangerously-bypass-approvals-and-sandbox` |
-
-`yolo` on codex removes the sandbox entirely. Use `plan` for anything you have not
-decided to let an agent execute.
+The transports differ underneath and you never have to care: Kimi speaks the
+Agent Client Protocol, Codex does not speak it at all and is driven through its
+CLI instead.
 
 ## Install
 
-Nothing to install ahead of time — `npx` fetches the bridge on first use:
+You need Node 20 or later, plus the agents themselves. Install whichever you
+want to use and log in:
 
-```bash
-npx -y @medyll/acp-team
-```
+    npm install -g @moonshot-ai/kimi-code    # then: kimi login
+    npm install -g @openai/codex             # then: codex login
 
-Or install it once, globally:
+The bridge itself needs no installation. Register it with your MCP host and
+`npx` fetches it on first use.
 
-```bash
-npm install -g @medyll/acp-team
-```
+**Claude Code, every project.** This is the common case:
 
-What you *do* need is the agents themselves: the `kimi` and `codex` CLIs on PATH
-and authenticated (`kimi login`, `codex login`). Point `KIMI_BIN` / `CODEX_BIN`
-elsewhere if they are not on PATH. Only have one of them? See
-`AGENT_BRIDGE_AGENTS` below — the bridge then advertises only that one, instead
-of offering an agent that cannot answer.
+    claude mcp add acp-team -s user -- npx -y @medyll/acp-team
 
-## Use it from any project
-
-Register the bridge once for every project (Claude Code "user" scope):
-
-```bash
-claude mcp add acp-team -s user -- npx -y @medyll/acp-team
-```
-
-The bridge always works in the project you are currently in. An MCP host starts
-one server per session with that session's working directory, and the bridge
-takes its default `cwd` from there — no configuration per project, no path to
-update. `agent_ask` also accepts an explicit `cwd`, and sessions are tracked per
-working directory, so one bridge can drive several projects at once.
-
-To pin it to a single project instead, commit a `.mcp.json` at the project root:
+**Claude Code, one project.** Commit a `.mcp.json` at the project root so the
+whole team gets it:
 
 ```json
 {
@@ -148,80 +40,231 @@ To pin it to a single project instead, commit a `.mcp.json` at the project root:
 }
 ```
 
-## Other MCP hosts
+**Codex.** It is an MCP host too:
 
-Nothing here is Claude Code specific — this is a plain stdio MCP server. Any host
-that speaks MCP can run `npx -y @medyll/acp-team` and get the same four tools.
-Codex itself is one such host:
+    codex mcp add acp-team -- npx -y @medyll/acp-team
 
-```bash
-codex mcp add acp-team -- npx -y @medyll/acp-team
+**Any other MCP host.** Nothing here is host specific. Run
+`npx -y @medyll/acp-team` as a stdio server and you get the same four tools.
+
+**Only one agent installed?** Set `AGENT_BRIDGE_AGENTS=codex` (or `kimi`) in the
+server's environment. The bridge then advertises only that one, rather than
+offering an agent that cannot answer.
+
+If a CLI is not on your PATH, point `KIMI_BIN` or `CODEX_BIN` at it.
+
+## Verify
+
+Ask your host to call `agent_status`. You should see each agent's version,
+transport and defaults. A missing CLI is reported by name, with the fix.
+
+## How it works
+
 ```
+                                 +--(ACP / JSON-RPC over stdio)--> kimi acp
+your agent --(MCP / stdio)--> acp-team
+                                 +--(codex exec --json, JSONL)-----> codex
+```
+
+Your host stays the host. The bridge is the client for whatever protocol each
+agent speaks, and exposes them all as ordinary MCP tools.
+
+The bridge works in the project you are currently in. An MCP host starts one
+server per session with that session's working directory, and the bridge takes
+its default from there. Nothing to configure per project, no paths to update.
+
+Conversations are kept per agent per working directory, so calling `agent_ask`
+twice continues the same conversation rather than starting over. Pass
+`session_id` to target a specific one, or `new_session: true` to start fresh.
+Since sessions are keyed by directory, one bridge can drive several projects at
+once.
+
+Every agent returns the same thing: the final answer, a summary of the tools it
+ran, its session id, and optionally its reasoning.
+
+## Usage
+
+Get a second opinion on code you just wrote:
+
+```json
+{ "agent": "codex", "prompt": "Review src/auth/session.ts for real bugs, not style. Be concise.", "mode": "plan" }
+```
+
+`mode: "plan"` is read-only. Use it whenever you want an opinion rather than an
+edit.
+
+Hand off a self-contained task and let the agent do the work:
+
+```json
+{ "agent": "codex", "prompt": "Add a --dry-run flag to the migrate command, with a test.", "mode": "default" }
+```
+
+Put a long-context model on a large question:
+
+```json
+{ "agent": "kimi", "prompt": "Trace how a request flows from the router to the database and note anything surprising.", "model": "kimi-code/k3-256k", "thinking": "high" }
+```
+
+Ask both and compare. Their transports are independent, so the two calls do not
+interfere:
+
+```json
+{ "agent": "kimi",  "prompt": "What breaks if we drop the retry wrapper?", "mode": "plan" }
+{ "agent": "codex", "prompt": "What breaks if we drop the retry wrapper?", "mode": "plan" }
+```
+
+Work on another project without leaving this one:
+
+```json
+{ "agent": "codex", "prompt": "Does the public API still match the docs?", "cwd": "/work/other-project", "mode": "plan" }
+```
+
+Continue an earlier conversation explicitly:
+
+```json
+{ "agent": "kimi", "prompt": "Now apply the second suggestion.", "session_id": "session_4fcf32d3-…" }
+```
+
+## Tools
+
+| Tool | Purpose |
+| --- | --- |
+| `agent_ask` | Delegate a prompt. Params: `agent`, `prompt`, `cwd`, `session_id`, `new_session`, `model`, `mode`, `thinking`, `options`, `include_thoughts` |
+| `agent_list` | Which agents exist, what each is good for, which modes they accept |
+| `agent_status` | Transport, version, models, defaults, open sessions |
+| `agent_cancel` | Cancel a running turn |
+
+## Modes
+
+`mode` decides how much the agent is allowed to do.
+
+| Mode | kimi | codex |
+| --- | --- | --- |
+| `plan` | ACP mode `plan`, read-only | `sandbox_mode="read-only"` |
+| `default` | ACP mode `default` | `sandbox_mode="workspace-write"` |
+| `auto` | ACP mode `auto` | same as `default` |
+| `yolo` | ACP mode `yolo` | `--dangerously-bypass-approvals-and-sandbox` |
+
+`yolo` on Codex removes the sandbox entirely. Prefer `plan` for anything you
+have not decided to let an agent execute.
+
+## Models and settings
+
+Set `model`, `mode` and `thinking` per call. A model set this way sticks to the
+session, so later turns keep it.
+
+```json
+{ "agent": "kimi",  "prompt": "…", "model": "kimi-code/k3", "thinking": "high" }
+{ "agent": "codex", "prompt": "…", "model": "gpt-5.6-sol" }
+```
+
+Anything else the agent supports goes through the free-form `options` map:
+
+```json
+{ "agent": "codex", "prompt": "…", "options": { "model_reasoning_effort": "high", "model_verbosity": "low" } }
+{ "agent": "kimi",  "prompt": "…", "options": { "thinking": "max" } }
+```
+
+For Codex these become `-c key=value` overrides, the same keys
+`~/.codex/config.toml` accepts. For Kimi they become session config options,
+validated against what that session currently advertises: a bad value is refused
+before it is sent, and the message lists the legal ones.
+
+Kimi's legal `thinking` values depend on the selected model, so `options` are
+applied after the model, never before.
+
+Defaults come from the environment, and anything the bridge does not override is
+inherited from the agent's own configuration.
+
+## Agents
+
+**kimi** — Kimi Code CLI over ACP, verified against `0.33.0`, protocol `1`.
+Models: `kimi-code/kimi-for-coding`, `kimi-code/kimi-for-coding-highspeed`,
+`kimi-code/k3-256k`, `kimi-code/k3`. One long-lived `kimi acp` process backs
+every session, so conversation state lives inside the agent. Supports `thinking`
+and `agent_cancel`. Authentication is Kimi's own OAuth: the bridge never sees a
+credential, and an expired token means running `kimi login` again.
+
+**codex** — OpenAI Codex CLI, verified against `0.145.0`. Codex has no ACP
+support, so the adapter drives `codex exec --json`, one process per turn, and
+resumes conversations by thread id. Consequently there is no `thinking`
+parameter, and `mode` selects a sandbox policy rather than an approval policy,
+because `exec` is non-interactive and nobody is there to approve anything.
 
 ## Environment
 
-| Var | Default | Meaning |
+| Variable | Default | Meaning |
 | --- | --- | --- |
-| `AGENT_BRIDGE_AGENTS` | all of them | Comma-separated roster, e.g. `codex`. Anything not listed is not advertised at all |
-| `AGENT_BRIDGE_CWD` | process cwd | Working directory given to new sessions. Leave unset — the default already follows the host session's project |
-| `KIMI_BIN` | `kimi.exe` / `kimi` | Kimi binary |
-| `KIMI_BRIDGE_MODEL` | agent default (K2.7 Coding) | Model for new kimi sessions |
-| `KIMI_BRIDGE_MODE` | `auto` | Default kimi mode |
-| `KIMI_BRIDGE_PERMISSION` | `allow` | How `session/request_permission` is answered: `allow` or `deny` |
-| `CODEX_BIN` | `codex.exe` / `codex` | Codex binary |
-| `CODEX_BRIDGE_MODEL` | codex default | Model for codex turns |
-| `CODEX_BRIDGE_MODE` | `default` | Default codex sandbox mode |
-| `CODEX_BRIDGE_SKIP_GIT_CHECK` | `true` | Pass `--skip-git-repo-check`; set `false` to let codex refuse non-git directories |
+| `AGENT_BRIDGE_AGENTS` | all | Comma-separated roster. Anything not listed is not advertised |
+| `AGENT_BRIDGE_CWD` | process cwd | Working directory for new sessions. Leave unset; the default already follows the host session |
+| `KIMI_BIN` | `kimi` | Kimi binary |
+| `KIMI_BRIDGE_MODEL` | agent default | Model for new Kimi sessions |
+| `KIMI_BRIDGE_MODE` | `auto` | Default Kimi mode |
+| `KIMI_BRIDGE_PERMISSION` | `allow` | How permission requests are answered: `allow` or `deny` |
+| `CODEX_BIN` | `codex` | Codex binary |
+| `CODEX_BRIDGE_MODEL` | Codex default | Model for Codex turns |
+| `CODEX_BRIDGE_MODE` | `default` | Default Codex sandbox mode |
+| `CODEX_BRIDGE_SKIP_GIT_CHECK` | `true` | Pass `--skip-git-repo-check`; set `false` to let Codex refuse non-git directories |
 
-## Layout
+Delegated turns can run for minutes. If one times out in Claude Code, raise
+`MCP_TOOL_TIMEOUT` (milliseconds).
+
+## Development
 
 ```
 src/
-  mcp-server.js            MCP surface: the four agent_* tools
-  mcp-smoke-test.js        Full chain test, every agent
+  mcp-server.js          MCP surface: the four agent_* tools
+  mcp-smoke-test.js      Full chain, every agent
   agents/
-    agent.js               Shared adapter contract + mode vocabulary
-    registry.js            Builds adapters, one line per agent
-    kimi/                  ACP client, adapter, transport-level test
-    codex/                 exec adapter, transport-level test
+    agent.js             Shared adapter contract and mode vocabulary
+    registry.js          Builds adapters, one entry per agent
+    session-queue.js     Serializes turns within a session
+    kimi/                ACP client, adapter, tests
+    codex/               exec adapter, tests
 ```
 
-Adding an agent: new folder under `src/agents/`, implement the contract in
-`agent.js`, one line in `registry.js`.
+Adding an agent means a new folder under `src/agents/`, an object satisfying the
+contract in `agent.js`, and one entry in `registry.js`.
 
-## Tests
-
-```bash
-npm test
-```
-
-Full chain, both agents. The others hit a single layer directly, no MCP:
+`npm test` runs the unit tests, which need no agent installed. The smoke tests
+below talk to the real CLIs and spend real tokens:
 
 | Script | Covers |
 | --- | --- |
-| `npm run test:kimi` | ACP client -> `kimi acp`: handshake, session, one prompt |
-| `npm run test:kimi:adapter` | Regression: model/mode/thinking overrides on a session reused by cwd |
-| `npm run test:codex` | `codex exec` adapter, including that thread resume preserves state |
+| `npm run test:smoke` | Full chain through MCP, every agent |
+| `npm run test:smoke:kimi` | ACP client against `kimi acp`: handshake, session, prompt |
+| `npm run test:smoke:kimi-adapter` | Overrides applied to a session reused by cwd |
+| `npm run test:smoke:codex` | Codex adapter, including that thread resume preserves state |
 
-## Transport gotchas found while building this
+`npm run test:smoke -- codex` restricts the full-chain run to one agent.
 
-- ACP `session/set_config_option` params are `{ sessionId, configId, type: "id"|"boolean", value }`
-  — not `optionId`. Wrong shape returns `Invalid params (-32602)`.
-- Kimi 0.33.0 answers `Internal error (-32603)` when a config option or mode is set
-  to the value it **already holds**, through either `session/set_mode` or
-  `session/set_config_option`. The client tracks current values and skips no-op sets.
-- Legal `thinking` values depend on the selected model: `kimi-code/k3` accepts
-  `low|high|max|on`, `kimi-code/kimi-for-coding` accepts only `on`. The client
-  tracks the allowed list from each response and rejects early with it.
-- ACP `session/prompt` resolves with a `stopReason`; the actual output arrives
-  beforehand as `session/update` notifications.
-- The bridge declares `fs` and `terminal` client capabilities as **false**, so Kimi
-  uses its own tools rather than calling back into the bridge. Any other incoming
-  agent request gets `-32601`.
-- `codex exec resume` accepts a far smaller flag set than `codex exec`: no
-  `--sandbox`, no `--cd`, no `--color`. The adapter uses only flags both accept.
-- `codex exec` reads extra prompt material from stdin — the adapter closes it
-  immediately or the process hangs.
-- Agents cold-start well past the MCP SDK's 60s default request timeout (the smoke
-  test raises it to 300s). If a delegated turn times out inside Claude Code, raise
-  its tool timeout via `MCP_TOOL_TIMEOUT` (milliseconds).
+## Notes on the transports
+
+These cost time to discover and are not in either agent's documentation.
+
+Kimi answers `Internal error (-32603)` when a config option or mode is set to the
+value it already holds, through either `session/set_mode` or
+`session/set_config_option`. The client tracks current values and skips no-op
+sets.
+
+Kimi's legal `thinking` values are model-dependent: `kimi-code/k3` accepts
+`low`, `high`, `max` and `on`, while `kimi-code/kimi-for-coding` accepts far
+fewer. The client tracks the allowed list from each response.
+
+ACP's `session/set_config_option` takes `{ sessionId, configId, type, value }`.
+Sending `optionId` instead returns `Invalid params (-32602)`.
+
+The bridge declares the `fs` and `terminal` client capabilities as false, so Kimi
+uses its own tools rather than calling back into the bridge.
+
+`codex exec resume` accepts a much smaller flag set than `codex exec`: no
+`--sandbox`, no `--cd`, no `--color`. The adapter uses only flags both accept,
+setting the sandbox through `-c` and the working directory through the spawn
+options.
+
+`codex exec` reads additional prompt material from stdin, so the adapter closes
+it immediately or the process waits forever.
+
+## License
+
+MIT
