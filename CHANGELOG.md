@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.2] - 2026-08-09
+**CI/CD:**
+- bump pnpm/action-setup to v6
+
+
+
 ## [1.0.1] - 2026-08-09
 **Features:**
 - publishable npm package, usable from any project
