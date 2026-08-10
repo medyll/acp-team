@@ -4,11 +4,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { createRegistry } from "./agents/registry.js";
 import { MODES } from "./agents/agent.js";
+import { createRunManager } from "./runs/run-manager.js";
 
 const DEFAULT_CWD = process.env.AGENT_BRIDGE_CWD || process.cwd();
 
 const log = (m) => process.stderr.write(`[agent-bridge] ${m}\n`);
 const registry = createRegistry({ log });
+const runManager = createRunManager({ registry });
 
 const AgentId = z.enum(registry.ids);
 
@@ -19,6 +21,21 @@ function render({ agent, result, includeThoughts }) {
     : "";
   const thoughts = includeThoughts && result.thoughts ? `\n\n---\n${agent} thoughts:\n${result.thoughts}` : "";
   return `${body}${tools}${thoughts}\n\n(agent: ${agent}, session: ${result.sessionId}, stop: ${result.stopReason})`;
+}
+
+function progressReporter(extra) {
+  const progressToken = extra?._meta?.progressToken;
+  let progress = 0;
+  return (event) => {
+    if (progressToken === undefined) return;
+    const message = [event.type, event.title, event.status].filter(Boolean).join(" — ");
+    void extra
+      .sendNotification({
+        method: "notifications/progress",
+        params: { progressToken, progress: ++progress, message }
+      })
+      .catch((error) => log(`progress notification failed: ${error.message}`));
+  };
 }
 
 const server = new McpServer({ name: "acp-team", version: "1.0.0" });
@@ -47,7 +64,7 @@ server.registerTool(
       include_thoughts: z.boolean().optional().describe("Include the agent's reasoning stream in the output.")
     }
   },
-  async ({ agent, prompt, cwd, session_id, new_session, model, mode, thinking, options, include_thoughts }) => {
+  async ({ agent, prompt, cwd, session_id, new_session, model, mode, thinking, options, include_thoughts }, extra) => {
     const adapter = registry.get(agent);
     const result = await adapter.ask({
       prompt,
@@ -57,9 +74,76 @@ server.registerTool(
       model,
       mode,
       thinking,
-      options
+      options,
+      signal: extra?.signal,
+      onEvent: progressReporter(extra)
     });
     return { content: [{ type: "text", text: render({ agent, result, includeThoughts: include_thoughts }) }] };
+  }
+);
+
+server.registerTool(
+  "agent_start",
+  {
+    title: "Start a supervised agent run",
+    description:
+      "Start an agent turn in the background and return a run_id immediately. Use agent_watch to observe it and agent_stop to interrupt it.",
+    inputSchema: {
+      agent: AgentId.describe("Which agent to delegate to."),
+      prompt: z.string().describe("Instruction or question to send."),
+      cwd: z.string().optional().describe("Working directory. Defaults to the bridge cwd."),
+      session_id: z.string().optional().describe("Existing session/thread to continue."),
+      new_session: z.boolean().optional().describe("Force a fresh session."),
+      model: z.string().optional().describe("Model override."),
+      mode: z.enum(MODES).optional().describe("Permission/sandbox mode."),
+      thinking: z.enum(["low", "high", "max", "on"]).optional().describe("Reasoning effort (kimi only)."),
+      options: z.record(z.union([z.string(), z.number(), z.boolean()])).optional()
+    }
+  },
+  async ({ agent, prompt, cwd, session_id, new_session, model, mode, thinking, options }) => {
+    const run = runManager.start({
+      agent,
+      prompt,
+      cwd: cwd || DEFAULT_CWD,
+      sessionId: session_id,
+      newSession: new_session,
+      model,
+      mode,
+      thinking,
+      options
+    });
+    return { content: [{ type: "text", text: JSON.stringify(run, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "agent_watch",
+  {
+    title: "Watch a supervised agent run",
+    description:
+      "Return a run's state and events. Pass after_event to receive only newer events; wait_ms enables bounded long-polling.",
+    inputSchema: {
+      run_id: z.string(),
+      after_event: z.number().int().nonnegative().optional(),
+      wait_ms: z.number().int().min(0).max(30_000).optional()
+    }
+  },
+  async ({ run_id, after_event, wait_ms }) => {
+    const run = await runManager.watch(run_id, { afterEvent: after_event ?? 0, waitMs: wait_ms ?? 0 });
+    return { content: [{ type: "text", text: JSON.stringify(run, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "agent_stop",
+  {
+    title: "Stop a supervised agent run",
+    description: "Interrupt a queued or running delegation by run_id, even before the agent has exposed a session id.",
+    inputSchema: { run_id: z.string() }
+  },
+  async ({ run_id }) => {
+    const run = runManager.stop(run_id);
+    return { content: [{ type: "text", text: JSON.stringify(run, null, 2) }] };
   }
 );
 
@@ -102,7 +186,12 @@ server.registerTool(
       }
     }
     return {
-      content: [{ type: "text", text: JSON.stringify({ bridgeCwd: DEFAULT_CWD, agents: report }, null, 2) }]
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ bridgeCwd: DEFAULT_CWD, agents: report, runs: runManager.list({ agent }) }, null, 2)
+        }
+      ]
     };
   }
 );
@@ -121,6 +210,7 @@ server.registerTool(
 );
 
 const shutdown = () => {
+  runManager.stopAll();
   registry.stopAll();
   process.exit(0);
 };

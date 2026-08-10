@@ -51,13 +51,29 @@ export function createKimiAdapter({ defaultModel, defaultMode, permissionPolicy,
       };
     },
 
-    async ask({ prompt, cwd, sessionId, newSession, model, mode, thinking, options }) {
+    async ask({ prompt, cwd, sessionId, newSession, model, mode, thinking, options, signal, onEvent }) {
       // A cwd identifies an implicit session; an explicit id takes precedence.
       // Queue the whole turn so configuration and prompt messages cannot interleave.
       return queue.run(sessionId ?? sessions.get(cwd) ?? cwd, async () => {
+        throwIfAborted(signal);
+        onEvent?.({ type: "turn.started" });
         await client.start();
+        throwIfAborted(signal);
         const before = sessions.get(cwd);
         const sid = await resolveSession({ sessionId, cwd, model, mode, thinking, newSession });
+        onEvent?.({ type: "session.started", sessionId: sid });
+        const abortTurn = () => {
+          try {
+            client.cancel(sid);
+          } catch (error) {
+            log?.(`kimi: cancel failed for ${sid}: ${error.message}`);
+          }
+        };
+        signal?.addEventListener("abort", abortTurn, { once: true });
+        if (signal?.aborted) {
+          abortTurn();
+          throwIfAborted(signal);
+        }
         // A session created just now already carries these; one being continued —
         // whether named explicitly or reused for this cwd — has to be reconfigured.
         const reused = sid === sessionId || sid === before;
@@ -69,14 +85,21 @@ export function createKimiAdapter({ defaultModel, defaultMode, permissionPolicy,
         for (const [configId, value] of Object.entries(options ?? {})) {
           await client.setConfigOption(sid, configId, value);
         }
-        const res = await client.prompt(sid, prompt);
-        return {
-          sessionId: sid,
-          text: res.text,
-          thoughts: res.thoughts,
-          toolCalls: res.toolCalls.map((t) => toolSummary(t.title ?? t.kind, t.status)),
-          stopReason: res.stopReason
-        };
+        try {
+          const res = await client.prompt(sid, prompt, {
+            onUpdate: (update) => onEvent?.(normalizeKimiUpdate(update))
+          });
+          throwIfAborted(signal);
+          return {
+            sessionId: sid,
+            text: res.text,
+            thoughts: res.thoughts,
+            toolCalls: res.toolCalls.map((t) => toolSummary(t.title ?? t.kind, t.status)),
+            stopReason: res.stopReason
+          };
+        } finally {
+          signal?.removeEventListener("abort", abortTurn);
+        }
       });
     },
 
@@ -88,4 +111,36 @@ export function createKimiAdapter({ defaultModel, defaultMode, permissionPolicy,
       client.stop();
     }
   };
+}
+
+function normalizeKimiUpdate(update) {
+  const types = {
+    agent_message_chunk: "message.delta",
+    agent_thought_chunk: "thought.updated",
+    tool_call: "tool.started",
+    tool_call_update: "tool.updated"
+  };
+  const event = {
+    type: types[update?.sessionUpdate] ?? "agent.update",
+    title: update?.title ?? update?.kind,
+    toolCallId: update?.toolCallId,
+    status: update?.status
+  };
+  // Stream assistant text, but never expose the private reasoning payload.
+  if (update?.sessionUpdate === "agent_message_chunk") event.text = visibleText(update.content);
+  return event;
+}
+
+function visibleText(content) {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map(visibleText).join("");
+  return content.type === "text" ? content.text ?? "" : "";
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error(signal.reason?.message ?? "Agent turn cancelled");
+  error.name = "AbortError";
+  throw error;
 }

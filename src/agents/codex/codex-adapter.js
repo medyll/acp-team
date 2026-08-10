@@ -40,7 +40,8 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
     }
   }
 
-  function runExec({ prompt, cwd, threadId, model, mode, options }) {
+  function runExec({ prompt, cwd, threadId, model, mode, options, signal, onEvent }) {
+    throwIfAborted(signal);
     const flags = ["--json", ...sandboxArgs(mode)];
     if (SKIP_GIT_CHECK) flags.push("--skip-git-repo-check");
     if (model || defaultModel) flags.push("--model", model || defaultModel);
@@ -57,6 +58,8 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
     return new Promise((resolve, reject) => {
       const proc = spawn(CODEX_BIN, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
       live.set(proc, { cwd, threadId });
+      const abortTurn = () => proc.kill();
+      signal?.addEventListener("abort", abortTurn, { once: true });
       // `codex exec` reads extra prompt material from stdin; close it or it waits.
       proc.stdin.end();
 
@@ -75,10 +78,13 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
         } catch {
           return; // non-JSON banner lines
         }
+        const observable = normalizeCodexEvent(ev);
+        if (observable) onEvent?.(observable);
         switch (ev.type) {
           case "thread.started":
             out.sessionId = ev.thread_id;
             live.get(proc).threadId = ev.thread_id;
+            onEvent?.({ type: "session.started", sessionId: ev.thread_id });
             break;
           case "item.completed":
             absorbItem(out, ev.item, errors);
@@ -101,6 +107,7 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
       const settle = (fn, arg) => {
         if (settled) return;
         settled = true;
+        signal?.removeEventListener("abort", abortTurn);
         live.delete(proc);
         fn(arg);
       };
@@ -116,6 +123,10 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
         )
       );
       proc.on("close", (code) => {
+        if (signal?.aborted) {
+          settle(reject, abortError(signal));
+          return;
+        }
         if (code !== 0) {
           const detail = errors.join("; ") || stderr.trim() || "no output";
           const partial = out.text ? ` (partial output: ${out.text.trim().slice(0, 200)})` : "";
@@ -150,10 +161,13 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
       };
     },
 
-    async ask({ prompt, cwd, sessionId, newSession, model, mode, options }) {
+    async ask({ prompt, cwd, sessionId, newSession, model, mode, options, signal, onEvent }) {
       return queue.run(sessionId ?? sessions.get(cwd) ?? cwd, async () => {
+        throwIfAborted(signal);
+        onEvent?.({ type: "turn.started" });
         const threadId = sessionId ?? (newSession ? null : sessions.get(cwd) ?? null);
-        const res = await runExec({ prompt, cwd, threadId, model, mode, options });
+        if (threadId) onEvent?.({ type: "session.started", sessionId: threadId });
+        const res = await runExec({ prompt, cwd, threadId, model, mode, options, signal, onEvent });
         if (res.sessionId) {
           sessions.set(cwd, res.sessionId);
           if (!threadId) log(`codex: new thread ${res.sessionId} (cwd=${cwd})`);
@@ -210,4 +224,48 @@ function absorbItem(out, item, errors) {
     default:
       break;
   }
+}
+
+function normalizeCodexEvent(event) {
+  if (event.type === "thread.started") return { type: "agent.started" };
+  if (event.type === "turn.started") return { type: "agent.turn_started" };
+  if (event.type === "turn.completed") return { type: "agent.turn_completed", usage: event.usage };
+  if (event.type === "turn.failed") return { type: "agent.turn_failed", error: event.error?.message };
+
+  const item = event.item;
+  if (!item) return null;
+  switch (item.type) {
+    case "agent_message":
+      return { type: "message.updated", text: item.text ?? "" };
+    case "reasoning":
+      return { type: "thought.updated" };
+    case "command_execution":
+      return { type: "tool.updated", title: `Command: ${item.command}`, status: item.status };
+    case "file_change":
+      return {
+        type: "tool.updated",
+        title: `Files: ${(item.changes ?? []).map((change) => change.path).join(", ")}`,
+        status: item.status
+      };
+    case "mcp_tool_call":
+      return { type: "tool.updated", title: `MCP: ${item.server}/${item.tool}`, status: item.status };
+    case "web_search":
+      return { type: "tool.updated", title: `Web search: ${item.query}`, status: item.status };
+    case "todo_list":
+      return { type: "plan.updated", items: item.items ?? [] };
+    case "error":
+      return { type: "agent.error", error: item.message ?? "unknown error" };
+    default:
+      return { type: `agent.${event.type}`, itemType: item.type, status: item.status };
+  }
+}
+
+function abortError(signal) {
+  const error = new Error(signal?.reason?.message ?? "Agent turn cancelled");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError(signal);
 }

@@ -129,10 +129,22 @@ Continue an earlier conversation explicitly:
 
 | Tool | Purpose |
 | --- | --- |
-| `agent_ask` | Delegate a prompt. Params: `agent`, `prompt`, `cwd`, `session_id`, `new_session`, `model`, `mode`, `thinking`, `options`, `include_thoughts` |
+| `agent_start` | Start a supervised turn and return a `run_id` immediately |
+| `agent_watch` | Read status and new events; supports bounded long-polling with `after_event` and `wait_ms` |
+| `agent_stop` | Stop a queued or running turn by `run_id`, even before a session id exists |
+| `agent_ask` | Blocking compatibility API; now emits MCP progress notifications and honors request cancellation |
 | `agent_list` | Which agents exist, what each is good for, which modes they accept |
-| `agent_status` | Transport, version, models, defaults, open sessions |
-| `agent_cancel` | Cancel a running turn |
+| `agent_status` | Transport, version, models, defaults, open sessions and supervised runs |
+| `agent_cancel` | Legacy cancellation by agent session id |
+
+For interactive delegation, prefer this control loop:
+
+1. Call `agent_start` and keep its `runId`.
+2. Call `agent_watch` with the last received event sequence in `after_event`.
+3. Call `agent_stop` whenever the work should end.
+
+Observable events include session creation, visible assistant text, plans, tool calls,
+commands and file changes. Private reasoning payloads are deliberately not exposed.
 
 ## Modes
 
