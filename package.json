@@ -1,6 +1,6 @@
 {
   "name": "@medyll/acp-team",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "description": "MCP server that lets any MCP host delegate coding work to other agents — Kimi over ACP, Codex over `codex exec` — through one uniform interface.",
   "keywords": [

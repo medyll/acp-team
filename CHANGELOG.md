@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.3] - 2026-08-10
+**Features:**
+- add supervised agent runs
+
+
+
 ## [1.0.2] - 2026-08-09
 **CI/CD:**
 - bump pnpm/action-setup to v6
