@@ -7,7 +7,7 @@ const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
  * request that launched them. Runs intentionally live in memory: their lifetime
  * matches the bridge process and the agent sessions it owns.
  */
-export function createRunManager({ registry, maxEvents = 500, maxRuns = 200 }) {
+export function createRunManager({ registry, usageManager, maxEvents = 500, maxRuns = 200 }) {
   const runs = new Map();
 
   function append(run, type, data = {}) {
@@ -97,6 +97,14 @@ export function createRunManager({ registry, maxEvents = 500, maxRuns = 200 }) {
           const { thoughts: _privateThoughts, ...publicResult } = result;
           run.result = publicResult;
           run.finishedAt = new Date().toISOString();
+          await usageManager?.record({
+            agent: run.agent,
+            model: askOptions.model,
+            sessionId: run.sessionId,
+            runId: run.runId,
+            usage: result.usage,
+            cost: result.cost
+          });
           append(run, "run.completed", { sessionId: run.sessionId });
         }
       } catch (error) {

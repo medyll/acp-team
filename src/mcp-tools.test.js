@@ -25,7 +25,12 @@ test("exposes supervised run controls without starting an agent", async () => {
       "agent_start",
       "agent_status",
       "agent_stop",
-      "agent_watch"
+      "agent_watch",
+      "budget_check",
+      "model_recommend",
+      "usage_report",
+      "usage_status",
+      "usage_sync"
     ]);
 
     const listed = await client.callTool({ name: "agent_list", arguments: {} });
@@ -34,6 +39,11 @@ test("exposes supervised run controls without starting an agent", async () => {
       agents.map((agent) => agent.id).sort(),
       ["codex", "kimi", "opencode"]
     );
+
+    const usage = await client.callTool({ name: "usage_status", arguments: { period: "month" } });
+    const status = JSON.parse(usage.content[0].text);
+    assert.equal(status.period.kind, "month");
+    assert.equal(status.budget.status, "not-configured");
   } finally {
     await client.close();
   }

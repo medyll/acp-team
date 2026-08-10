@@ -138,6 +138,11 @@ Continue an earlier conversation explicitly:
 | `agent_list` | Which agents exist, what each is good for, which modes they accept |
 | `agent_status` | Transport, version, models, defaults, open sessions and supervised runs |
 | `agent_cancel` | Legacy cancellation by agent session id |
+| `usage_status` | Observed tokens, reported cost, configured budget, reset period and active promotion |
+| `usage_report` | Usage ledger aggregated by agent and model |
+| `model_recommend` | Configured cheap, standard or premium model candidates for a task |
+| `budget_check` | Check an estimated task cost before delegating it |
+| `usage_sync` | Refresh OpenRouter credits and model-price catalog, without storing its key |
 
 For interactive delegation, prefer this control loop:
 
@@ -216,6 +221,8 @@ to `plan`. Models come from the providers configured by `opencode auth login`.
 | --- | --- | --- |
 | `AGENT_BRIDGE_AGENTS` | all | Comma-separated roster. Anything not listed is not advertised |
 | `AGENT_BRIDGE_CWD` | process cwd | Working directory for new sessions. Leave unset; the default already follows the host session |
+| `AGENT_BRIDGE_DATA_DIR` | `.acp-team/` under bridge cwd | Private local usage ledger and budget configuration |
+| `OPENROUTER_MANAGEMENT_KEY` | unset | Management key used only by `usage_sync` to read OpenRouter credits and catalog |
 | `KIMI_BIN` | `kimi` | Kimi binary |
 | `KIMI_BRIDGE_MODEL` | agent default | Model for new Kimi sessions |
 | `KIMI_BRIDGE_MODE` | `auto` | Default Kimi mode |
@@ -231,6 +238,23 @@ to `plan`. Models come from the providers configured by `opencode auth login`.
 
 Delegated turns can run for minutes. If one times out in Claude Code, raise
 `MCP_TOOL_TIMEOUT` (milliseconds).
+
+### Usage and budget data
+
+The first `usage_status` call creates editable JSON files in the data directory:
+`budgets.json` (period and per-run limits), `models.json` (the short list for
+`cheap`, `standard` and `premium` work), `providers.json` (billing metadata)
+and `promotions.json` (temporary offers with an expiry). Completed agent calls
+append observed metrics to `usage-ledger.jsonl`.
+
+`usage_sync` saves the OpenRouter balance in `providers.json` and a normalized
+catalogue with price, context and capability data in `model-catalog.json`. It
+never writes the management key. OpenCode's `stats` command currently has no
+machine-readable output, so its cost data remains agent-reported until its CLI
+or server exposes a stable JSON format.
+
+Provider quotas that cannot be queried are deliberately reported as `unknown`.
+ACP Team keeps reported costs distinct from calculated prices and estimates.
 
 ## Development
 

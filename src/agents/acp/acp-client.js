@@ -242,7 +242,8 @@ export class AcpClient {
 
   /**
    * Send a prompt and collect everything the agent streams back until it stops.
-   * Returns { stopReason, text, thoughts, toolCalls }.
+   * Returns { stopReason, text, thoughts, toolCalls, usage } when the ACP
+   * agent implements the optional session usage extension.
    */
   async prompt(sessionId, text, { onUpdate } = {}) {
     const session = this.sessions.get(sessionId);
@@ -277,7 +278,7 @@ export class AcpClient {
         sessionId,
         prompt: [{ type: "text", text }]
       });
-      return { stopReason: res?.stopReason ?? "end_turn", ...out };
+      return { stopReason: res?.stopReason ?? "end_turn", usage: res?.usage, ...out };
     } finally {
       session.collectors.delete(collect);
     }

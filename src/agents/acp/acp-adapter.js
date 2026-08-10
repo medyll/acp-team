@@ -101,7 +101,8 @@ export function createAcpAdapter({
             text: res.text,
             thoughts: res.thoughts,
             toolCalls: res.toolCalls.map((t) => toolSummary(t.title ?? t.kind, t.status)),
-            stopReason: res.stopReason
+            stopReason: res.stopReason,
+            usage: res.usage
           };
         } finally {
           signal?.removeEventListener("abort", abortTurn);
@@ -134,6 +135,11 @@ function normalizeAcpUpdate(update) {
   };
   // Stream assistant text, but never expose the private reasoning payload.
   if (update?.sessionUpdate === "agent_message_chunk") event.text = visibleText(update.content);
+  if (update?.sessionUpdate === "usage_update") {
+    event.type = "usage.updated";
+    event.usage = update.usage ?? update;
+    event.cost = update.cost;
+  }
   return event;
 }
 

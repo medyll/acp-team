@@ -3,6 +3,7 @@ node_modules/
 .env
 .env.*
 !.env.example
+.acp-team/
 coverage/
 *.log
 npm-debug.log*

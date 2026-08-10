@@ -5,12 +5,15 @@ import { z } from "zod";
 import { createRegistry } from "./agents/registry.js";
 import { MODES } from "./agents/agent.js";
 import { createRunManager } from "./runs/run-manager.js";
+import { createUsageManager } from "./usage/usage-manager.js";
+import path from "node:path";
 
 const DEFAULT_CWD = process.env.AGENT_BRIDGE_CWD || process.cwd();
 
 const log = (m) => process.stderr.write(`[agent-bridge] ${m}\n`);
 const registry = createRegistry({ log });
-const runManager = createRunManager({ registry });
+const usageManager = createUsageManager({ dataDir: process.env.AGENT_BRIDGE_DATA_DIR || path.join(DEFAULT_CWD, ".acp-team") });
+const runManager = createRunManager({ registry, usageManager });
 
 const AgentId = z.enum(registry.ids);
 
@@ -78,6 +81,7 @@ server.registerTool(
       signal: extra?.signal,
       onEvent: progressReporter(extra)
     });
+    await usageManager.record({ agent, model, sessionId: result.sessionId, usage: result.usage, cost: result.cost });
     return { content: [{ type: "text", text: render({ agent, result, includeThoughts: include_thoughts }) }] };
   }
 );
@@ -144,6 +148,59 @@ server.registerTool(
   async ({ run_id }) => {
     const run = runManager.stop(run_id);
     return { content: [{ type: "text", text: JSON.stringify(run, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "usage_status",
+  {
+    title: "Usage and budget status",
+    description: "Show observed tokens, reported cost, configured budget, reset period and active promotion. Unknown provider quotas remain explicitly unknown.",
+    inputSchema: { period: z.enum(["day", "week", "month"]).optional(), agent: AgentId.optional(), model: z.string().optional() }
+  },
+  async ({ period, agent, model }) => ({ content: [{ type: "text", text: JSON.stringify(await usageManager.status({ period, agent, model }), null, 2) }] })
+);
+
+server.registerTool(
+  "usage_report",
+  {
+    title: "Usage report by model",
+    description: "Aggregate the local usage ledger by agent and model for a period.",
+    inputSchema: { period: z.enum(["day", "week", "month"]).optional(), agent: AgentId.optional(), model: z.string().optional() }
+  },
+  async ({ period, agent, model }) => ({ content: [{ type: "text", text: JSON.stringify(await usageManager.report({ period, agent, model }), null, 2) }] })
+);
+
+server.registerTool(
+  "model_recommend",
+  {
+    title: "Recommend an admissible model",
+    description: "Choose configured cheap, standard or premium model candidates while respecting the local budget policy.",
+    inputSchema: { task: z.string().optional(), profile: z.enum(["auto", "cheap", "standard", "premium"]).optional() }
+  },
+  async ({ task, profile }) => ({ content: [{ type: "text", text: JSON.stringify(await usageManager.recommend({ task, profile }), null, 2) }] })
+);
+
+server.registerTool(
+  "budget_check",
+  {
+    title: "Check a task budget",
+    description: "Check an estimated cost against the configured per-run and monthly budget before starting an agent.",
+    inputSchema: { profile: z.enum(["cheap", "standard", "premium"]).optional(), estimated_cost: z.number().nonnegative().optional(), currency: z.string().length(3).optional() }
+  },
+  async ({ profile, estimated_cost, currency }) => ({ content: [{ type: "text", text: JSON.stringify(await usageManager.check({ profile, estimatedCost: estimated_cost, currency }), null, 2) }] })
+);
+
+server.registerTool(
+  "usage_sync",
+  {
+    title: "Synchronize provider usage",
+    description: "Refresh OpenRouter credits and its model-price catalog. Requires OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_API_KEY); the key is never written to disk.",
+    inputSchema: { provider: z.literal("openrouter").optional() }
+  },
+  async () => {
+    const apiKey = process.env.OPENROUTER_MANAGEMENT_KEY || process.env.OPENROUTER_API_KEY;
+    return { content: [{ type: "text", text: JSON.stringify(await usageManager.syncOpenRouter({ apiKey }), null, 2) }] };
   }
 );
 
