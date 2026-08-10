@@ -6,7 +6,9 @@
       "env": {
         "KIMI_BRIDGE_MODE": "auto",
         "KIMI_BRIDGE_PERMISSION": "allow",
-        "CODEX_BRIDGE_MODE": "default"
+        "CODEX_BRIDGE_MODE": "default",
+        "OPENCODE_BRIDGE_MODE": "default",
+        "OPENCODE_BRIDGE_PERMISSION": "allow"
       }
     }
   }

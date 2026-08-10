@@ -1,5 +1,5 @@
 // End-to-end test through the MCP layer: MCP client -> bridge -> each agent.
-// Usage: node src/mcp-smoke-test.js [agent ...]   (default: kimi codex)
+// Usage: node src/mcp-smoke-test.js [agent ...]   (default: kimi codex opencode)
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,7 @@ import path from "node:path";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
-const agents = process.argv.slice(2).length ? process.argv.slice(2) : ["kimi", "codex"];
+const agents = process.argv.slice(2).length ? process.argv.slice(2) : ["kimi", "codex", "opencode"];
 
 const transport = new StdioClientTransport({
   command: process.execPath,

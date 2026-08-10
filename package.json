@@ -2,7 +2,7 @@
   "name": "@medyll/acp-team",
   "version": "1.0.3",
   "type": "module",
-  "description": "MCP server that lets any MCP host delegate coding work to other agents — Kimi over ACP, Codex over `codex exec` — through one uniform interface.",
+  "description": "MCP server that lets any MCP host delegate coding work to Kimi, Codex and OpenCode through one supervised interface.",
   "keywords": [
     "mcp",
     "model-context-protocol",
@@ -11,6 +11,7 @@
     "claude-code",
     "kimi",
     "codex",
+    "opencode",
     "agent",
     "multi-agent"
   ],
@@ -31,11 +32,12 @@
   },
   "scripts": {
     "start": "node src/mcp-server.js",
-    "test": "node --test --test-concurrency=1 --test-timeout=5000 src/agents/session-queue.test.js src/agents/kimi/kimi-adapter.queue.test.js src/runs/run-manager.test.js src/mcp-tools.test.js",
+    "test": "node --test --test-concurrency=1 --test-timeout=5000 src/agents/session-queue.test.js src/agents/kimi/kimi-adapter.queue.test.js src/agents/opencode/opencode-adapter.test.js src/runs/run-manager.test.js src/mcp-tools.test.js",
     "test:smoke": "node src/mcp-smoke-test.js",
     "test:smoke:kimi": "node src/agents/kimi/kimi-smoke-test.js",
     "test:smoke:kimi-adapter": "node src/agents/kimi/kimi-adapter-test.js",
-    "test:smoke:codex": "node src/agents/codex/codex-smoke-test.js"
+    "test:smoke:codex": "node src/agents/codex/codex-smoke-test.js",
+    "test:smoke:opencode": "node src/agents/opencode/opencode-smoke-test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.1",

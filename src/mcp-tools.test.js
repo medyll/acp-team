@@ -27,8 +27,14 @@ test("exposes supervised run controls without starting an agent", async () => {
       "agent_stop",
       "agent_watch"
     ]);
+
+    const listed = await client.callTool({ name: "agent_list", arguments: {} });
+    const agents = JSON.parse(listed.content[0].text);
+    assert.deepEqual(
+      agents.map((agent) => agent.id).sort(),
+      ["codex", "kimi", "opencode"]
+    );
   } finally {
     await client.close();
   }
 });
-

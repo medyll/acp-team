@@ -2,14 +2,13 @@
 
 Delegate coding work to other agents from inside your own.
 
-`acp-team` is an MCP server that puts Kimi and Codex behind one tool. Ask either
-of them a question, hand either of them a task, and get back the same shape of
+`acp-team` is an MCP server that puts Kimi, Codex and OpenCode behind one tool. Ask any
+of them a question, hand any of them a task, and get back the same shape of
 answer. They run in your project, with their own file and shell tools, and report
 what they did.
 
-The transports differ underneath and you never have to care: Kimi speaks the
-Agent Client Protocol, Codex does not speak it at all and is driven through its
-CLI instead.
+The transports differ underneath and you never have to care: Kimi and OpenCode
+speak the Agent Client Protocol, while Codex is driven through its CLI.
 
 ## Install
 
@@ -18,6 +17,7 @@ want to use and log in:
 
     npm install -g @moonshot-ai/kimi-code    # then: kimi login
     npm install -g @openai/codex             # then: codex login
+    npm install -g opencode-ai               # then: opencode auth login
 
 The bridge itself needs no installation. Register it with your MCP host and
 `npx` fetches it on first use.
@@ -45,13 +45,14 @@ whole team gets it:
     codex mcp add acp-team -- npx -y @medyll/acp-team
 
 **Any other MCP host.** Nothing here is host specific. Run
-`npx -y @medyll/acp-team` as a stdio server and you get the same four tools.
+`npx -y @medyll/acp-team` as a stdio server and you get the same seven tools.
 
-**Only one agent installed?** Set `AGENT_BRIDGE_AGENTS=codex` (or `kimi`) in the
+**Only one agent installed?** Set `AGENT_BRIDGE_AGENTS=codex` (or `kimi`, or
+`opencode`) in the
 server's environment. The bridge then advertises only that one, rather than
 offering an agent that cannot answer.
 
-If a CLI is not on your PATH, point `KIMI_BIN` or `CODEX_BIN` at it.
+If a CLI is not on your PATH, point `KIMI_BIN`, `CODEX_BIN` or `OPENCODE_BIN` at it.
 
 ## Verify
 
@@ -63,6 +64,7 @@ transport and defaults. A missing CLI is reported by name, with the fix.
 ```
                                  +--(ACP / JSON-RPC over stdio)--> kimi acp
 your agent --(MCP / stdio)--> acp-team
+                                 +--(ACP / JSON-RPC over stdio)--> opencode acp
                                  +--(codex exec --json, JSONL)-----> codex
 ```
 
@@ -203,6 +205,11 @@ resumes conversations by thread id. Consequently there is no `thinking`
 parameter, and `mode` selects a sandbox policy rather than an approval policy,
 because `exec` is non-interactive and nobody is there to approve anything.
 
+**opencode** — OpenCode CLI over native ACP, verified against `1.17.11`,
+protocol `1`. One long-lived `opencode acp` process backs its sessions. Bridge
+modes `default`, `auto` and `yolo` map to OpenCode's `build` mode; `plan` maps
+to `plan`. Models come from the providers configured by `opencode auth login`.
+
 ## Environment
 
 | Variable | Default | Meaning |
@@ -217,6 +224,10 @@ because `exec` is non-interactive and nobody is there to approve anything.
 | `CODEX_BRIDGE_MODEL` | Codex default | Model for Codex turns |
 | `CODEX_BRIDGE_MODE` | `default` | Default Codex sandbox mode |
 | `CODEX_BRIDGE_SKIP_GIT_CHECK` | `true` | Pass `--skip-git-repo-check`; set `false` to let Codex refuse non-git directories |
+| `OPENCODE_BIN` | `opencode` (`opencode.cmd` on Windows) | OpenCode binary |
+| `OPENCODE_BRIDGE_MODEL` | OpenCode default | Model for new OpenCode sessions |
+| `OPENCODE_BRIDGE_MODE` | `default` | Default bridge mode (`plan` or a mode mapped to OpenCode `build`) |
+| `OPENCODE_BRIDGE_PERMISSION` | `allow` | How ACP permission requests are answered: `allow` or `deny` |
 
 Delegated turns can run for minutes. If one times out in Claude Code, raise
 `MCP_TOOL_TIMEOUT` (milliseconds).
@@ -225,13 +236,15 @@ Delegated turns can run for minutes. If one times out in Claude Code, raise
 
 ```
 src/
-  mcp-server.js          MCP surface: the four agent_* tools
+  mcp-server.js          MCP surface: the seven agent_* tools
   mcp-smoke-test.js      Full chain, every agent
   agents/
     agent.js             Shared adapter contract and mode vocabulary
     registry.js          Builds adapters, one entry per agent
     session-queue.js     Serializes turns within a session
-    kimi/                ACP client, adapter, tests
+    acp/                 Shared ACP transport and adapter
+    kimi/                Kimi profile and tests
+    opencode/            OpenCode profile and tests
     codex/               exec adapter, tests
 ```
 
@@ -247,6 +260,7 @@ below talk to the real CLIs and spend real tokens:
 | `npm run test:smoke:kimi` | ACP client against `kimi acp`: handshake, session, prompt |
 | `npm run test:smoke:kimi-adapter` | Overrides applied to a session reused by cwd |
 | `npm run test:smoke:codex` | Codex adapter, including that thread resume preserves state |
+| `npm run test:smoke:opencode` | ACP client against `opencode acp`: handshake, session, prompt |
 
 `npm run test:smoke -- codex` restricts the full-chain run to one agent.
 

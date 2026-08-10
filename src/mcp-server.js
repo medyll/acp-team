@@ -45,21 +45,21 @@ server.registerTool(
   {
     title: "Ask a teammate agent",
     description:
-      "Delegate a task to another coding agent (kimi or codex). The agent runs its own tools — file reads/writes, shell — inside the given working directory, and returns its final answer plus a summary of what it ran. Conversation state is kept per agent per working directory unless session_id or new_session is given.",
+      "Delegate a task to another coding agent (kimi, codex or opencode). The agent runs its own tools — file reads/writes, shell — inside the given working directory, and returns its final answer plus a summary of what it ran. Conversation state is kept per agent per working directory unless session_id or new_session is given.",
     inputSchema: {
       agent: AgentId.describe("Which agent to delegate to."),
       prompt: z.string().describe("Instruction or question to send."),
       cwd: z.string().optional().describe("Working directory the agent operates in. Defaults to the bridge cwd."),
       session_id: z.string().optional().describe("Existing session/thread to continue."),
       new_session: z.boolean().optional().describe("Force a fresh session instead of reusing the one for this cwd."),
-      model: z.string().optional().describe("Model override, e.g. kimi-code/k3 for kimi, gpt-5-codex for codex."),
+      model: z.string().optional().describe("Model override supported by the selected agent."),
       mode: z.enum(MODES).optional().describe("Permission/sandbox mode: plan is read-only, yolo removes all guardrails."),
       thinking: z.enum(["low", "high", "max", "on"]).optional().describe("Reasoning effort (kimi only)."),
       options: z
         .record(z.union([z.string(), z.number(), z.boolean()]))
         .optional()
         .describe(
-          'Free-form model/agent settings. For codex these become `-c key=value` config overrides, e.g. {"model_reasoning_effort":"high"}. For kimi they become session config options, e.g. {"thinking":"max"}. Invalid keys or values are reported by the agent.'
+          'Free-form model/agent settings. For codex these become `-c key=value` overrides; ACP agents apply them as session config options. Invalid keys or values are reported by the agent.'
         ),
       include_thoughts: z.boolean().optional().describe("Include the agent's reasoning stream in the output.")
     }

@@ -1,5 +1,6 @@
 import { createKimiAdapter } from "./kimi/kimi-adapter.js";
 import { createCodexAdapter } from "./codex/codex-adapter.js";
+import { createOpenCodeAdapter } from "./opencode/opencode-adapter.js";
 
 /**
  * Builds every adapter the bridge exposes. Adding an agent means adding a
@@ -18,6 +19,13 @@ export function createRegistry({ log }) {
       createCodexAdapter({
         defaultModel: process.env.CODEX_BRIDGE_MODEL,
         defaultMode: process.env.CODEX_BRIDGE_MODE || "default",
+        log
+      }),
+    opencode: () =>
+      createOpenCodeAdapter({
+        defaultModel: process.env.OPENCODE_BRIDGE_MODEL,
+        defaultMode: process.env.OPENCODE_BRIDGE_MODE || "default",
+        permissionPolicy: process.env.OPENCODE_BRIDGE_PERMISSION || "allow",
         log
       })
   };
