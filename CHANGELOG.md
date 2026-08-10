@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.4] - 2026-08-10
+**Features:**
+- add OpenCode agent support
+
+
+
 ## [1.0.3] - 2026-08-10
 **Features:**
 - add supervised agent runs
