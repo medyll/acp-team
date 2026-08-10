@@ -1,6 +1,6 @@
 {
   "name": "@medyll/acp-team",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "description": "MCP server that lets any MCP host delegate coding work to Kimi, Codex and OpenCode through one supervised interface.",
   "keywords": [

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.5] - 2026-08-10
+**Features:**
+- add usage budget controls
+
+
+
 ## [1.0.4] - 2026-08-10
 **Features:**
 - add OpenCode agent support
