@@ -24,7 +24,8 @@ const DEFAULT_MODELS = {
 const DEFAULT_PROVIDERS = {
   codex: { billingMode: "subscription", quotaSource: "unknown" },
   kimi: { billingMode: "subscription", quotaSource: "unknown" },
-  opencode: { billingMode: "mixed", quotaSource: "agent-reported" }
+  opencode: { billingMode: "mixed", quotaSource: "agent-reported" },
+  ollama: { billingMode: "local", quotaSource: "local-runtime" }
 };
 
 const DEFAULT_PROMOTIONS = { promotions: [] };

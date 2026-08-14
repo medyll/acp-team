@@ -2,22 +2,32 @@
 
 Delegate coding work to other agents from inside your own.
 
-`acp-team` is an MCP server that puts Kimi, Codex and OpenCode behind one tool. Ask any
-of them a question, hand any of them a task, and get back the same shape of
-answer. They run in your project, with their own file and shell tools, and report
-what they did.
+`acp-team` is an extensible MCP control plane for other LLMs and agents. It puts
+heterogeneous transports behind one supervised interface: ask a model a question,
+hand a tool-capable agent a task, and get back the same response shape.
 
-The transports differ underneath and you never have to care: Kimi and OpenCode
-speak the Agent Client Protocol, while Codex is driven through its CLI.
+Kimi, Codex, OpenCode and Ollama adapters are included today. They are bundled
+implementations, not a closed support list: any LLM runtime or agent can join the
+team through an adapter implementing the shared contract.
+
+Transports can use ACP, a vendor CLI, a native HTTP API or another suitable
+protocol. ACP Team normalizes sessions, progress, cancellation, usage and results
+without requiring every LLM to speak the same protocol.
 
 ## Install
 
-You need Node 20 or later, plus the agents themselves. Install whichever you
-want to use and log in:
+You need Node 20 or later, plus whichever agents or model runtimes you want to
+use. These are examples for the bundled adapters, not the complete compatibility
+surface:
 
     npm install -g @moonshot-ai/kimi-code    # then: kimi login
     npm install -g @openai/codex             # then: codex login
     npm install -g opencode-ai               # then: opencode auth login
+
+Ollama is optional. Install it from https://ollama.com/download, start it, and
+pull at least one model. Local API access needs no key:
+
+    ollama pull qwen3-coder
 
 The bridge itself needs no installation. Register it with your MCP host and
 `npx` fetches it on first use.
@@ -45,11 +55,10 @@ whole team gets it:
     codex mcp add acp-team -- npx -y @medyll/acp-team
 
 **Any other MCP host.** Nothing here is host specific. Run
-`npx -y @medyll/acp-team` as a stdio server and you get the same seven tools.
+`npx -y @medyll/acp-team` as a stdio server and you get the same tools.
 
-**Only one agent installed?** Set `AGENT_BRIDGE_AGENTS=codex` (or `kimi`, or
-`opencode`) in the
-server's environment. The bridge then advertises only that one, rather than
+**Only some adapters enabled?** Set `AGENT_BRIDGE_AGENTS` to their registered ids,
+for example `codex,ollama`. The bridge advertises only that roster rather than
 offering an agent that cannot answer.
 
 If a CLI is not on your PATH, point `KIMI_BIN`, `CODEX_BIN` or `OPENCODE_BIN` at it.
@@ -59,13 +68,79 @@ If a CLI is not on your PATH, point `KIMI_BIN`, `CODEX_BIN` or `OPENCODE_BIN` at
 Ask your host to call `agent_status`. You should see each agent's version,
 transport and defaults. A missing CLI is reported by name, with the fix.
 
+## Command line
+
+Running `acp-team` without arguments still starts the MCP stdio server. Human-facing
+commands use explicit subcommands:
+
+```sh
+acp-team help
+acp-team prompt "Review this project" --to codex --mode plan
+acp-team chat --with kimi
+acp-team prompt "Review this function" --to ollama --model qwen3-coder
+acp-team configure "Optimize local model usage" --controller ollama --with qwen3-coder
+acp-team agent status
+acp-team usage report --period month
+```
+
+### AI-assisted configuration
+
+`configure` runs a guided configuration interview. The controller reads the current
+settings and usage, asks a small set of material questions, shows progress while it
+works, validates the resulting changes, and saves a proposal. An interactive session
+then asks whether to apply it; a non-interactive session never applies by default.
+
+```sh
+acp-team configure
+acp-team configure "Keep reviews strong under a $30 monthly budget"
+acp-team configure "Refresh model prices and optimize profiles" --with opus
+acp-team configure "Same objective" --avec sonnet
+acp-team configure "Use another controller" --controller codex --with gpt-5
+```
+
+`--with` (or its French alias `--avec`) selects the controller's model. Claude is the
+default controller; `--controller` selects a different installed agent.
+
+Every proposal has an id and an on-disk JSON representation:
+
+```sh
+acp-team config diff cfg_20260815...
+acp-team config apply cfg_20260815...
+acp-team config rollback history_20260815...
+```
+
+Applying and rolling back require interactive confirmation. Non-interactive
+configuration requires both `--apply` and `--yes`. Proposal validation refuses
+secret, token and API-key fields.
+
+Configuration remains JSON because ACP Team already uses JSON for budgets, model
+profiles, providers and promotions. Proposals and rollback snapshots are versioned
+JSON too, avoiding a second parser and a migration to TOML without a concrete need.
+
+### Research and install another CLI
+
+The controller can research a CLI's official installation and authentication docs,
+then present a structured dry-run:
+
+```sh
+acp-team cli research "vendor CLI" --with opus
+acp-team cli install "vendor CLI" --dry-run
+acp-team cli install "vendor CLI" --execute
+```
+
+Installation requires an HTTPS official source and a structured package-manager
+command. Shell composition, download-and-execute pipelines and secret storage are
+refused. Interactive execution always asks for confirmation; non-interactive
+execution requires both `--execute` and `--yes`.
+
 ## How it works
 
 ```
-                                 +--(ACP / JSON-RPC over stdio)--> kimi acp
+                                 +--(ACP / JSON-RPC)--> ACP agents
 your agent --(MCP / stdio)--> acp-team
-                                 +--(ACP / JSON-RPC over stdio)--> opencode acp
-                                 +--(codex exec --json, JSONL)-----> codex
+                                 +--(CLI events)------> CLI agents
+                                 +--(HTTP APIs)-------> model runtimes
+                                 +--(adapter contract)-> future LLMs
 ```
 
 Your host stays the host. The bridge is the client for whatever protocol each
@@ -143,6 +218,15 @@ Continue an earlier conversation explicitly:
 | `model_recommend` | Configured cheap, standard or premium model candidates for a task |
 | `budget_check` | Check an estimated task cost before delegating it |
 | `usage_sync` | Refresh OpenRouter credits and model-price catalog, without storing its key |
+| `ollama_status` | Ollama endpoint, version, available models and running models |
+| `ollama_models` | List models available from the configured Ollama endpoint |
+| `ollama_model_show` | Inspect one model's metadata and capabilities |
+| `ollama_running` | List models currently loaded into memory |
+| `ollama_pull` | Pull a model after explicit confirmation |
+| `config_inspect` | Read configuration and provenance before proposing changes |
+| `config_stage` | Validate and save a proposal without applying it |
+| `config_apply` | Apply an explicitly approved proposal and create a rollback snapshot |
+| `config_rollback` | Restore an explicitly approved snapshot |
 
 For interactive delegation, prefer this control loop:
 
@@ -195,7 +279,10 @@ applied after the model, never before.
 Defaults come from the environment, and anything the bridge does not override is
 inherited from the agent's own configuration.
 
-## Agents
+## Bundled adapters
+
+This section documents the adapters shipped in this release. It does not define
+or restrict the LLMs ACP Team can support.
 
 **kimi** — Kimi Code CLI over ACP, verified against `0.33.0`, protocol `1`.
 Models: `kimi-code/kimi-for-coding`, `kimi-code/kimi-for-coding-highspeed`,
@@ -214,6 +301,12 @@ because `exec` is non-interactive and nobody is there to approve anything.
 protocol `1`. One long-lived `opencode acp` process backs its sessions. Bridge
 modes `default`, `auto` and `yolo` map to OpenCode's `build` mode; `plan` maps
 to `plan`. Models come from the providers configured by `opencode auth login`.
+
+**ollama** — Native Ollama HTTP API integration for local or Ollama Cloud models.
+It participates in delegated prompts, supervised runs, sessions and usage
+reporting, but receives no file or shell tools. Dedicated MCP tools cover model
+listing, inspection, running status and confirmed pulls. Destructive model
+operations are deliberately not exposed.
 
 ## Environment
 
@@ -235,6 +328,9 @@ to `plan`. Models come from the providers configured by `opencode auth login`.
 | `OPENCODE_BRIDGE_MODEL` | OpenCode default | Model for new OpenCode sessions |
 | `OPENCODE_BRIDGE_MODE` | `default` | Default bridge mode (`plan` or a mode mapped to OpenCode `build`) |
 | `OPENCODE_BRIDGE_PERMISSION` | `allow` | How ACP permission requests are answered: `allow` or `deny` |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Local or cloud Ollama API endpoint |
+| `OLLAMA_API_KEY` | unset | Bearer token for direct Ollama Cloud access; never stored by ACP Team |
+| `OLLAMA_BRIDGE_MODEL` | unset | Default model for Ollama conversations; otherwise each prompt must name one |
 
 Delegated turns can run for minutes. If one times out in Claude Code, raise
 `MCP_TOOL_TIMEOUT` (milliseconds).

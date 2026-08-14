@@ -2,7 +2,7 @@
   "name": "@medyll/acp-team",
   "version": "1.0.5",
   "type": "module",
-  "description": "MCP server that lets any MCP host delegate coding work to Kimi, Codex and OpenCode through one supervised interface.",
+  "description": "Extensible MCP control plane for supervising heterogeneous LLM agents through one interface.",
   "keywords": [
     "mcp",
     "model-context-protocol",
@@ -12,13 +12,14 @@
     "kimi",
     "codex",
     "opencode",
+    "ollama",
     "agent",
     "multi-agent"
   ],
   "license": "MIT",
   "author": "Meddy Lebrun",
   "bin": {
-    "acp-team": "src/mcp-server.js"
+    "acp-team": "src/cli.js"
   },
   "files": [
     "src",
@@ -31,8 +32,9 @@
     "access": "public"
   },
   "scripts": {
+    "dev": "node --watch src/cli.js",
     "start": "node src/mcp-server.js",
-    "test": "node --test --test-concurrency=1 --test-timeout=5000 src/agents/session-queue.test.js src/agents/kimi/kimi-adapter.queue.test.js src/agents/opencode/opencode-adapter.test.js src/runs/run-manager.test.js src/usage/usage-manager.test.js src/mcp-tools.test.js",
+    "test": "node --test --test-concurrency=1 --test-timeout=5000 src/agents/session-queue.test.js src/agents/kimi/kimi-adapter.queue.test.js src/agents/opencode/opencode-adapter.test.js src/ollama/ollama-client.test.js src/ollama/ollama-adapter.test.js src/runs/run-manager.test.js src/usage/usage-manager.test.js src/config/config-manager.test.js src/controllers/controller.test.js src/cli/configure-command.test.js src/cli/installer-command.test.js src/cli.test.js src/mcp-tools.test.js",
     "test:smoke": "node src/mcp-smoke-test.js",
     "test:smoke:kimi": "node src/agents/kimi/kimi-smoke-test.js",
     "test:smoke:kimi-adapter": "node src/agents/kimi/kimi-adapter-test.js",

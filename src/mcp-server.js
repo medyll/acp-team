@@ -6,6 +6,7 @@ import { createRegistry } from "./agents/registry.js";
 import { MODES } from "./agents/agent.js";
 import { createRunManager } from "./runs/run-manager.js";
 import { createUsageManager } from "./usage/usage-manager.js";
+import { createConfigManager } from "./config/config-manager.js";
 import path from "node:path";
 
 const DEFAULT_CWD = process.env.AGENT_BRIDGE_CWD || process.cwd();
@@ -13,6 +14,7 @@ const DEFAULT_CWD = process.env.AGENT_BRIDGE_CWD || process.cwd();
 const log = (m) => process.stderr.write(`[agent-bridge] ${m}\n`);
 const registry = createRegistry({ log });
 const usageManager = createUsageManager({ dataDir: process.env.AGENT_BRIDGE_DATA_DIR || path.join(DEFAULT_CWD, ".acp-team") });
+const configManager = createConfigManager({ dataDir: process.env.AGENT_BRIDGE_DATA_DIR || path.join(DEFAULT_CWD, ".acp-team") });
 const runManager = createRunManager({ registry, usageManager });
 
 const AgentId = z.enum(registry.ids);
@@ -202,6 +204,110 @@ server.registerTool(
     const apiKey = process.env.OPENROUTER_MANAGEMENT_KEY || process.env.OPENROUTER_API_KEY;
     return { content: [{ type: "text", text: JSON.stringify(await usageManager.syncOpenRouter({ apiKey }), null, 2) }] };
   }
+);
+
+if (registry.ids.includes("ollama")) {
+server.registerTool(
+  "ollama_status",
+  {
+    title: "Ollama status",
+    description: "Check the configured Ollama endpoint, version, available models and models currently loaded in memory.",
+    inputSchema: {}
+  },
+  async () => ({ content: [{ type: "text", text: JSON.stringify(await registry.get("ollama").status(), null, 2) }] })
+);
+
+server.registerTool(
+  "ollama_models",
+  {
+    title: "List Ollama models",
+    description: "List models available through the configured local or cloud Ollama API.",
+    inputSchema: {}
+  },
+  async () => ({ content: [{ type: "text", text: JSON.stringify(await registry.get("ollama").client.list(), null, 2) }] })
+);
+
+server.registerTool(
+  "ollama_model_show",
+  {
+    title: "Inspect an Ollama model",
+    description: "Show model metadata and capabilities without returning large verbose template fields.",
+    inputSchema: { model: z.string().min(1) }
+  },
+  async ({ model }) => ({ content: [{ type: "text", text: JSON.stringify(await registry.get("ollama").client.show({ model }), null, 2) }] })
+);
+
+server.registerTool(
+  "ollama_running",
+  {
+    title: "List running Ollama models",
+    description: "List models currently loaded into memory, including context and VRAM information when reported by Ollama.",
+    inputSchema: {}
+  },
+  async () => ({ content: [{ type: "text", text: JSON.stringify(await registry.get("ollama").client.ps(), null, 2) }] })
+);
+
+server.registerTool(
+  "ollama_pull",
+  {
+    title: "Pull an Ollama model",
+    description: "Download an Ollama model. This can consume substantial bandwidth and disk space; call only after explicit user confirmation.",
+    inputSchema: { model: z.string().min(1), confirm: z.literal("pull") }
+  },
+  async ({ model }, extra) => {
+    const report = progressReporter(extra);
+    report({ type: "ollama.pull", title: model, status: "started" });
+    const result = await registry.get("ollama").client.pull({ model, signal: extra?.signal });
+    report({ type: "ollama.pull", title: model, status: "completed" });
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+);
+}
+
+server.registerTool(
+  "config_inspect",
+  {
+    title: "Inspect ACP Team configuration",
+    description: "Read the effective ACP Team settings, budgets, model profiles, provider metadata, promotions and model catalog before proposing a change.",
+    inputSchema: {}
+  },
+  async () => ({ content: [{ type: "text", text: JSON.stringify(await configManager.inspect(), null, 2) }] })
+);
+
+server.registerTool(
+  "config_stage",
+  {
+    title: "Stage a configuration proposal",
+    description: "Validate and save a configuration proposal without applying it. Secrets, tokens and API keys are refused.",
+    inputSchema: {
+      summary: z.string(),
+      rationale: z.array(z.string()).optional(),
+      changes: z.array(z.object({ file: z.enum(["settings", "budgets", "models", "providers", "promotions", "catalog"]), path: z.string(), value: z.unknown(), reason: z.string().optional() })),
+      warnings: z.array(z.string()).optional(),
+      sources: z.array(z.object({ url: z.string().url(), title: z.string().optional(), retrievedAt: z.string().optional() })).optional()
+    }
+  },
+  async (proposal) => ({ content: [{ type: "text", text: JSON.stringify(await configManager.stage(proposal), null, 2) }] })
+);
+
+server.registerTool(
+  "config_apply",
+  {
+    title: "Apply a staged configuration proposal",
+    description: "Apply a staged proposal and create a rollback snapshot. Call only after the user explicitly approves the displayed proposal.",
+    inputSchema: { proposal_id: z.string(), confirm: z.literal("apply") }
+  },
+  async ({ proposal_id }) => ({ content: [{ type: "text", text: JSON.stringify(await configManager.apply(proposal_id), null, 2) }] })
+);
+
+server.registerTool(
+  "config_rollback",
+  {
+    title: "Rollback ACP Team configuration",
+    description: "Restore a configuration backup. Call only after explicit user confirmation.",
+    inputSchema: { backup_id: z.string(), confirm: z.literal("rollback") }
+  },
+  async ({ backup_id }) => ({ content: [{ type: "text", text: JSON.stringify(await configManager.rollback(backup_id), null, 2) }] })
 );
 
 server.registerTool(

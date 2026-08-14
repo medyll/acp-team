@@ -1,6 +1,7 @@
 import { createKimiAdapter } from "./kimi/kimi-adapter.js";
 import { createCodexAdapter } from "./codex/codex-adapter.js";
 import { createOpenCodeAdapter } from "./opencode/opencode-adapter.js";
+import { createOllamaAdapter } from "../ollama/ollama-adapter.js";
 
 /**
  * Builds every adapter the bridge exposes. Adding an agent means adding a
@@ -26,6 +27,11 @@ export function createRegistry({ log }) {
         defaultModel: process.env.OPENCODE_BRIDGE_MODEL,
         defaultMode: process.env.OPENCODE_BRIDGE_MODE || "default",
         permissionPolicy: process.env.OPENCODE_BRIDGE_PERMISSION || "allow",
+        log
+      }),
+    ollama: () =>
+      createOllamaAdapter({
+        defaultModel: process.env.OLLAMA_BRIDGE_MODEL,
         log
       })
   };
