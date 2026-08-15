@@ -51,15 +51,11 @@ test("plan mode asks for a read-only sandbox through a config override", async (
   assert.equal(result.text, "looks fine");
 });
 
-test("yolo mode bypasses the sandbox outright", async () => {
+test("rejects removed unsandboxed modes before spawning Codex", async () => {
   const { spawned, spawnImpl } = fakeCodex();
   const adapter = adapterFor(spawnImpl);
-  const turn = adapter.ask({ prompt: "go", cwd: "/work", mode: "yolo" });
-  await new Promise(queueMicrotask);
-  assert.ok(spawned[0].args.includes("--dangerously-bypass-approvals-and-sandbox"));
-  assert.equal(spawned[0].args.includes("-c"), false, "the bypass flag replaces the sandbox override");
-  spawned[0].finish();
-  await turn;
+  await assert.rejects(() => adapter.ask({ prompt: "go", cwd: "/work", mode: "yolo" }), /Unsupported agent mode/);
+  assert.equal(spawned.length, 0);
 });
 
 test("resuming a thread uses only flags `codex exec resume` accepts", async () => {

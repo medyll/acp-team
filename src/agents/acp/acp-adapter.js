@@ -1,4 +1,4 @@
-import { MODES, toolSummary } from "../agent.js";
+import { assertSupportedMode, MODES, toolSummary } from "../agent.js";
 import { createSessionQueue } from "../session-queue.js";
 
 /**
@@ -25,10 +25,11 @@ export function createAcpAdapter({
   async function resolveSession({ sessionId, cwd, model, mode, thinking, newSession }) {
     if (sessionId) return sessionId;
     if (!newSession && sessions.has(cwd)) return sessions.get(cwd);
+    const selectedMode = assertSupportedMode(mode || defaultMode);
     const res = await client.newSession({
       cwd,
       model: model || defaultModel,
-      mode: mapMode(mode || defaultMode),
+      mode: mapMode(selectedMode),
       thinking
     });
     knownModels ??= res.configOptions?.find((o) => o.id === "model")?.options?.map((o) => o.value) ?? null;
@@ -58,6 +59,7 @@ export function createAcpAdapter({
     },
 
     async ask({ prompt, cwd, sessionId, newSession, model, mode, thinking, options, signal, onEvent }) {
+      assertSupportedMode(mode);
       // A cwd identifies an implicit session; an explicit id takes precedence.
       // Queue the whole turn so configuration and prompt messages cannot interleave.
       return queue.run(sessionId ?? sessions.get(cwd) ?? cwd, async () => {

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import readline from "node:readline";
-import { MODES, toolSummary } from "../agent.js";
+import { assertSupportedMode, MODES, toolSummary } from "../agent.js";
 import { createSessionQueue } from "../session-queue.js";
 import { appendLimited, deadlineSignal } from "../../resilience.js";
 
@@ -17,7 +17,6 @@ const SKIP_GIT_CHECK = process.env.CODEX_BRIDGE_SKIP_GIT_CHECK !== "false";
  * command. Modes select a sandbox policy instead of an approval policy:
  *   plan            -> --sandbox read-only
  *   default | auto  -> --sandbox workspace-write
- *   yolo            -> --dangerously-bypass-approvals-and-sandbox
  */
 export function createCodexAdapter({ defaultModel, defaultMode, log, timeoutMs = 10 * 60_000, maxOutputBytes = 4 * 1024 * 1024, spawnImpl = spawn, bin = CODEX_BIN }) {
   /** cwd -> thread_id */
@@ -31,13 +30,15 @@ export function createCodexAdapter({ defaultModel, defaultMode, log, timeoutMs =
   // --sandbox, no --cd, no --color. Everything below therefore uses only flags
   // both accept — sandbox via a -c config override, cwd via the spawn option.
   function sandboxArgs(mode) {
-    switch (mode || defaultMode) {
+    const selectedMode = assertSupportedMode(mode || defaultMode);
+    switch (selectedMode) {
       case "plan":
         return ["-c", 'sandbox_mode="read-only"'];
-      case "yolo":
-        return ["--dangerously-bypass-approvals-and-sandbox"];
-      default:
+      case "default":
+      case "auto":
         return ["-c", 'sandbox_mode="workspace-write"'];
+      default:
+        throw new Error("Codex mode is required");
     }
   }
 

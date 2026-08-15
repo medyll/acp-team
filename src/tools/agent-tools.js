@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MODES } from "../agents/agent.js";
-import { WRITE_CONFIRMATION, YOLO_CONFIRMATION, authorizeMode } from "../security-policy.js";
+import { WRITE_CONFIRMATION, authorizeMode } from "../security-policy.js";
 import { jsonResult, progressReporter, render, textResult } from "./shared.js";
 
 /** Delegation options every agent tool accepts, kept in one place so the
@@ -12,9 +12,8 @@ function delegationShape(AgentId) {
     session_id: z.string().optional().describe("Existing session/thread to continue."),
     new_session: z.boolean().optional().describe("Force a fresh session instead of reusing the one for this cwd."),
     model: z.string().optional().describe("Model override supported by the selected agent."),
-    mode: z.enum(MODES).optional().describe("Permission/sandbox mode: plan is read-only, yolo removes all guardrails."),
+    mode: z.enum(MODES).optional().describe("Permission/sandbox mode: plan is read-only; default and auto allow workspace writes."),
     confirm_write: z.literal(WRITE_CONFIRMATION).optional().describe("Required acknowledgement for default or auto write-capable modes."),
-    confirm_yolo: z.literal(YOLO_CONFIRMATION).optional().describe("Required acknowledgement when mode is yolo."),
     thinking: z.enum(["low", "high", "max", "on"]).optional().describe("Reasoning effort (kimi only)."),
     options: z
       .record(z.union([z.string(), z.number(), z.boolean()]))
@@ -42,7 +41,7 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
       }
     },
     async (input, extra) => {
-      const mode = authorizeMode(input.mode, { confirmWrite: input.confirm_write, confirmYolo: input.confirm_yolo });
+      const mode = authorizeMode(input.mode, { confirmWrite: input.confirm_write });
       const result = await registry.get(input.agent).ask({
         prompt: input.prompt,
         cwd: input.cwd || defaultCwd,
@@ -69,7 +68,7 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
       inputSchema: shape
     },
     async (input) => {
-      const mode = authorizeMode(input.mode, { confirmWrite: input.confirm_write, confirmYolo: input.confirm_yolo });
+      const mode = authorizeMode(input.mode, { confirmWrite: input.confirm_write });
       return jsonResult(
         runManager.start({
           agent: input.agent,
@@ -98,15 +97,14 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
         cwd: shape.cwd,
         mode: shape.mode,
         confirm_write: shape.confirm_write,
-        confirm_yolo: shape.confirm_yolo,
         models: z
           .record(z.string())
           .optional()
           .describe("Per-agent model override, keyed by agent id. Agents without an entry use their default.")
       }
     },
-    async ({ prompt, agents, cwd, mode, confirm_write, confirm_yolo, models }) => {
-      const authorizedMode = authorizeMode(mode, { confirmWrite: confirm_write, confirmYolo: confirm_yolo });
+    async ({ prompt, agents, cwd, mode, confirm_write, models }) => {
+      const authorizedMode = authorizeMode(mode, { confirmWrite: confirm_write });
       const unique = [...new Set(agents)];
       const runs = unique.map((agent) => {
         try {

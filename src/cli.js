@@ -147,7 +147,7 @@ async function runChat({ options, cwd, registry, terminal }) {
     if (["/exit", "/quit"].includes(prompt)) break;
     if (!prompt) continue;
     terminal.phase(`${agent} réfléchit…`);
-    const result = await registry.get(agent).ask({ prompt, cwd, model: options.model, mode: options.mode || "default" });
+    const result = await registry.get(agent).ask({ prompt, cwd, model: options.model, mode: options.mode || "plan" });
     terminal.log(`\n${agent}> ${result.text}\n`);
   }
 }
@@ -186,7 +186,7 @@ function parseValue(value) {
   try { return JSON.parse(value); } catch { return value; }
 }
 
-const HELP = `acp-team — piloter et configurer une équipe de LLM\n\nUsage:\n  acp-team                         Démarrer le serveur MCP (compatibilité)\n  acp-team serve                   Démarrer explicitement le serveur MCP\n  acp-team configure [objectif] [--with modèle|--avec modèle] [--controller agent] [--apply]\n  acp-team config show|get|set|validate|diff|apply|rollback\n  acp-team prompt <texte> --to <agent> [--model modèle] [--mode plan|default|auto|yolo]\n  acp-team chat --with <agent>\n  acp-team cli research <nom> [--with modèle]\n  acp-team cli install <nom> [--dry-run|--execute --yes]\n  acp-team agent list|status [nom]\n  acp-team usage status|report|sync\n  acp-team model recommend <tâche>\n  acp-team budget check --profile <profil> --cost <montant>\n\nSécurité:\n  configure demande confirmation avant application ; un script exige --apply --yes.\n  cli install montre toujours la source, la commande et l’authentification avant exécution.`;
+const HELP = `acp-team — piloter et configurer une équipe de LLM\n\nUsage:\n  acp-team                         Démarrer le serveur MCP (compatibilité)\n  acp-team serve                   Démarrer explicitement le serveur MCP\n  acp-team configure [objectif] [--with modèle|--avec modèle] [--controller agent] [--apply]\n  acp-team config show|get|set|validate|diff|apply|rollback\n  acp-team prompt <texte> --to <agent> [--model modèle] [--mode plan|default|auto]\n  acp-team chat --with <agent>\n  acp-team cli research <nom> [--with modèle]\n  acp-team cli install <nom> [--dry-run|--execute --yes]\n  acp-team agent list|status [nom]\n  acp-team usage status|report|sync\n  acp-team model recommend <tâche>\n  acp-team budget check --profile <profil> --cost <montant>\n\nSécurité:\n  configure demande confirmation avant application ; un script exige --apply --yes.\n  cli install montre toujours la source, la commande et l’authentification avant exécution.`;
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   const argv = process.argv.slice(2);

@@ -83,6 +83,9 @@ acp-team agent status
 acp-team usage report --period month
 ```
 
+`prompt` and `chat` default to the read-only `plan` mode. Passing `default` or
+`auto` is an explicit choice to allow workspace writes.
+
 ### AI-assisted configuration
 
 `configure` runs a guided configuration interview. The controller reads the current
@@ -173,7 +176,7 @@ edit.
 Hand off a self-contained task and let the agent do the work:
 
 ```json
-{ "agent": "codex", "prompt": "Add a --dry-run flag to the migrate command, with a test.", "mode": "default" }
+{ "agent": "codex", "prompt": "Add a --dry-run flag to the migrate command, with a test.", "mode": "default", "confirm_write": "ALLOW_AGENT_WRITE" }
 ```
 
 Put a long-context model on a large question:
@@ -265,8 +268,8 @@ answers and reasoning are not journalled.
 
 ### What the confirmations do and do not do
 
-Write-capable modes require `confirm_write`, and `yolo` requires `confirm_yolo`.
-These are a deliberate speed bump, not an authorization boundary: any caller
+Write-capable modes require `confirm_write`. This is a deliberate speed bump,
+not an authorization boundary: any caller
 able to invoke the tool can also send the literal string. What they buy is that
 nothing reaches a write-capable mode by defaulting into it or by a model
 guessing a flag. The real boundary is the sandbox each adapter requests from its
@@ -281,13 +284,10 @@ CLI, plus whatever approval the host requires before the tool runs at all.
 | `plan` | ACP mode `plan`, read-only | `sandbox_mode="read-only"` |
 | `default` | ACP mode `default` | `sandbox_mode="workspace-write"` |
 | `auto` | ACP mode `auto` | same as `default` |
-| `yolo` | ACP mode `yolo` | `--dangerously-bypass-approvals-and-sandbox` |
-
 When an MCP request omits `mode`, ACP Team now uses `plan` rather than an
 agent-specific write-capable default. `default` and `auto` require
-`confirm_write: "ALLOW_AGENT_WRITE"`. `yolo` requires
-`confirm_yolo: "ALLOW_UNSANDBOXED_AGENT"`. `yolo` on Codex removes the sandbox
-entirely, so keep `plan` for work that has not explicitly been authorized.
+`confirm_write: "ALLOW_AGENT_WRITE"`. Unsandboxed execution is not exposed;
+keep `plan` for work that has not explicitly been authorized.
 
 ## Models and settings
 
@@ -337,7 +337,7 @@ because `exec` is non-interactive and nobody is there to approve anything.
 
 **opencode** — OpenCode CLI over native ACP, verified against `1.17.11`,
 protocol `1`. One long-lived `opencode acp` process backs its sessions. Bridge
-modes `default`, `auto` and `yolo` map to OpenCode's `build` mode; `plan` maps
+modes `default` and `auto` map to OpenCode's `build` mode; `plan` maps
 to `plan`. Models come from the providers configured by `opencode auth login`.
 
 **ollama** — Native Ollama HTTP API integration for local or Ollama Cloud models.
