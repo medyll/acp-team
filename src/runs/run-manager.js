@@ -1,14 +1,51 @@
 import { randomUUID } from "node:crypto";
 
 const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
+const ACTIVE_STATES = new Set(["running", "cancelling"]);
+const DEFAULT_MAX_CONCURRENT_PER_AGENT = 2;
 
 /**
  * Keep delegated turns observable and controllable independently from the MCP
- * request that launched them. Runs intentionally live in memory: their lifetime
- * matches the bridge process and the agent sessions it owns.
+ * request that launched them. Live run state stays in memory — its lifetime
+ * matches the bridge process and the agent sessions it owns — while an optional
+ * journal records lifecycle transitions so a restart still has an audit trail.
  */
-export function createRunManager({ registry, usageManager, maxEvents = 500, maxRuns = 200 }) {
+export function createRunManager({
+  registry,
+  usageManager,
+  maxEvents = 500,
+  maxRuns = 200,
+  maxConcurrentPerAgent = DEFAULT_MAX_CONCURRENT_PER_AGENT,
+  journal
+}) {
   const runs = new Map();
+  const pending = new Map();
+
+  function concurrencyLimit(agent) {
+    const configured =
+      typeof maxConcurrentPerAgent === "object" && maxConcurrentPerAgent !== null
+        ? maxConcurrentPerAgent[agent] ?? maxConcurrentPerAgent.default
+        : maxConcurrentPerAgent;
+    return Number.isFinite(configured) && configured > 0 ? configured : Infinity;
+  }
+
+  function activeCount(agent) {
+    let count = 0;
+    for (const run of runs.values()) {
+      if (run.agent === agent && ACTIVE_STATES.has(run.status)) count += 1;
+    }
+    return count;
+  }
+
+  function record(run, event) {
+    journal?.record({
+      runId: run.runId,
+      agent: run.agent,
+      status: run.status,
+      sessionId: run.sessionId,
+      event
+    });
+  }
 
   function append(run, type, data = {}) {
     const event = {
@@ -19,6 +56,7 @@ export function createRunManager({ registry, usageManager, maxEvents = 500, maxR
     };
     run.events.push(event);
     if (run.events.length > maxEvents) run.events.splice(0, run.events.length - maxEvents);
+    if (type.startsWith("run.")) record(run, event);
     for (const wake of run.waiters) wake();
     run.waiters.clear();
     return event;
@@ -50,8 +88,9 @@ export function createRunManager({ registry, usageManager, maxEvents = 500, maxR
     if (runs.size >= maxRuns) {
       const oldestFinished = [...runs.values()].find((candidate) => TERMINAL_STATES.has(candidate.status));
       if (oldestFinished) runs.delete(oldestFinished.runId);
+      else throw new Error(`Run capacity reached (${maxRuns} active runs). Stop or wait for a run before starting another.`);
     }
-    const adapter = registry.get(agent);
+    registry.get(agent);
     const controller = new AbortController();
     const run = {
       runId: randomUUID(),
@@ -69,7 +108,40 @@ export function createRunManager({ registry, usageManager, maxEvents = 500, maxR
       waiters: new Set()
     };
     runs.set(run.runId, run);
+    run.askOptions = askOptions;
     append(run, "run.queued");
+
+    // A busy agent is a slow agent: hold extra work here rather than letting an
+    // unbounded number of CLI subprocesses compete for the same runtime.
+    if (activeCount(agent) >= concurrencyLimit(agent)) {
+      queueFor(agent).push(run);
+      append(run, "run.waiting", { reason: `agent ${agent} is at its concurrency limit` });
+    } else {
+      admit(run);
+    }
+
+    return publicRun(run);
+  }
+
+  function queueFor(agent) {
+    if (!pending.has(agent)) pending.set(agent, []);
+    return pending.get(agent);
+  }
+
+  function drain(agent) {
+    const queue = pending.get(agent);
+    if (!queue?.length) return;
+    while (queue.length && activeCount(agent) < concurrencyLimit(agent)) {
+      admit(queue.shift());
+    }
+  }
+
+  function admit(run) {
+    const { agent, askOptions, controller } = run;
+    const adapter = registry.get(agent);
+    run.status = "running";
+    run.startedAt = new Date().toISOString();
+    append(run, "run.admitted");
 
     // Deliberately detach execution from the MCP call that created the run.
     run.promise = Promise.resolve().then(async () => {
@@ -78,10 +150,6 @@ export function createRunManager({ registry, usageManager, maxEvents = 500, maxR
           ...askOptions,
           signal: controller.signal,
           onEvent(event) {
-            if (event.type === "turn.started" && !run.startedAt) {
-              run.status = "running";
-              run.startedAt = new Date().toISOString();
-            }
             if (event.type === "session.started" && event.sessionId) run.sessionId = event.sessionId;
             append(run, event.type, event);
           }
@@ -118,10 +186,10 @@ export function createRunManager({ registry, usageManager, maxEvents = 500, maxR
           run.finishedAt = new Date().toISOString();
           append(run, "run.failed", { error: run.error });
         }
+      } finally {
+        drain(run.agent);
       }
     });
-
-    return publicRun(run);
   }
 
   async function watch(runId, { afterEvent = 0, waitMs = 0 } = {}) {
@@ -143,8 +211,22 @@ export function createRunManager({ registry, usageManager, maxEvents = 500, maxR
   function stop(runId) {
     const run = get(runId);
     if (TERMINAL_STATES.has(run.status)) return publicRun(run);
-    run.status = "cancelling";
     append(run, "run.stop_requested");
+
+    // A run still waiting for a slot has no adapter work to interrupt: drop it
+    // from the queue and settle it here, or nothing would ever resolve it.
+    const queue = pending.get(run.agent);
+    const waitingAt = queue?.indexOf(run) ?? -1;
+    if (waitingAt >= 0) {
+      queue.splice(waitingAt, 1);
+      run.controller.abort(new Error("Stopped by mandator"));
+      run.status = "cancelled";
+      run.finishedAt = new Date().toISOString();
+      append(run, "run.cancelled");
+      return publicRun(run);
+    }
+
+    run.status = "cancelling";
     run.controller.abort(new Error("Stopped by mandator"));
     return publicRun(run);
   }
@@ -161,5 +243,15 @@ export function createRunManager({ registry, usageManager, maxEvents = 500, maxR
     }
   }
 
-  return { start, watch, stop, list, stopAll };
+  function capacity() {
+    const agents = new Set([...[...runs.values()].map((run) => run.agent), ...pending.keys()]);
+    return [...agents].map((agent) => ({
+      agent,
+      active: activeCount(agent),
+      waiting: pending.get(agent)?.length ?? 0,
+      limit: concurrencyLimit(agent)
+    }));
+  }
+
+  return { start, watch, stop, list, stopAll, capacity };
 }
