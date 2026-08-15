@@ -23,3 +23,15 @@ test("reports unreachable Ollama hosts clearly", async () => {
   const client = createOllamaClient({ fetchImpl: async () => { throw new Error("offline"); } });
   await assert.rejects(() => client.list(), /Cannot reach Ollama/);
 });
+
+test("times out stalled calls and caps response bodies", async () => {
+  const stalled = createOllamaClient({ timeoutMs: 5, fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })) });
+  await assert.rejects(() => stalled.list(), /timed out/);
+
+  const oversized = createOllamaClient({ maxResponseBytes: 16, fetchImpl: async () => new Response(JSON.stringify({ value: "x".repeat(100) })) });
+  await assert.rejects(() => oversized.list(), /exceeds/);
+});
+
+test("refuses to send an API key over remote plain HTTP", () => {
+  assert.throws(() => createOllamaClient({ host: "http://ollama.example", apiKey: "secret" }), /requires HTTPS/);
+});

@@ -7,7 +7,7 @@ import { withProgress } from "./terminal.js";
 const INSTALLERS = new Set(["npm", "npm.cmd", "pnpm", "pnpm.cmd", "bun", "bun.exe", "winget", "winget.exe", "choco", "choco.exe", "scoop", "scoop.cmd", "pipx", "pipx.exe", "cargo", "cargo.exe", "brew"]);
 const FORBIDDEN_EXECUTABLES = new Set(["cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "sh", "bash", "zsh", "curl", "wget"]);
 
-export async function runInstaller({ action, name, withModel, controllerId, dryRun = false, execute = false, yes = false, cwd, dataDir, registry, terminal, spawnImpl = spawn }) {
+export async function runInstaller({ action, name, withModel, controllerId, dryRun = false, execute = false, yes = false, cwd, dataDir, registry, terminal, spawnImpl = spawn, commandTimeoutMs = 10 * 60_000 }) {
   if (!name) name = await terminal.ask("Quelle CLI veux-tu rechercher ?");
   if (!name) throw new Error("CLI name is required");
   const selected = parseWith(withModel, controllerId || "claude");
@@ -38,8 +38,8 @@ export async function runInstaller({ action, name, withModel, controllerId, dryR
     return { plan, executed: false };
   }
 
-  await runSafeCommand(plan.install, { cwd, spawnImpl, terminal });
-  if (plan.verify) await runSafeCommand(plan.verify, { cwd, spawnImpl, terminal, verification: true });
+  await runSafeCommand(plan.install, { cwd, spawnImpl, terminal, timeoutMs: commandTimeoutMs });
+  if (plan.verify) await runSafeCommand(plan.verify, { cwd, spawnImpl, terminal, verification: true, timeoutMs: commandTimeoutMs });
   terminal.phase("Phase 4/4 — installation terminée");
   if (plan.authentication?.steps?.length) {
     terminal.log("\nAuthentification à effectuer :");
@@ -105,12 +105,24 @@ function quoteArgument(value) {
   return /\s/.test(value) ? JSON.stringify(value) : value;
 }
 
-function runSafeCommand(command, { cwd, spawnImpl, terminal, verification = false }) {
+function runSafeCommand(command, { cwd, spawnImpl, terminal, verification = false, timeoutMs }) {
   terminal.phase(`${verification ? "Vérification" : "Installation"} : ${renderCommand(command)}`);
   return new Promise((resolve, reject) => {
     const executable = process.platform === "win32" && ["npm", "pnpm", "scoop"].includes(command.program) ? `${command.program}.cmd` : command.program;
     const child = spawnImpl(executable, command.args, { cwd, stdio: "inherit", shell: false });
-    child.on("error", reject);
-    child.on("close", (code) => code === 0 ? resolve() : reject(new Error(`${command.program} exited with code ${code}`)));
+    let settled = false;
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(() => reject(new Error(`${command.program} timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+    timer.unref?.();
+    child.on("error", (error) => finish(() => reject(error)));
+    child.on("close", (code) => finish(() => code === 0 ? resolve() : reject(new Error(`${command.program} exited with code ${code}`))));
   });
 }
