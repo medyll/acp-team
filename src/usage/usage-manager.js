@@ -1,5 +1,13 @@
-import { mkdir, readFile, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, appendFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
+import { deadlineSignal, fetchWithRetry, readJsonResponse } from "../resilience.js";
+
+const DEFAULT_LEDGER_MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * Reports only ever span a day, a week or a month, so anything older than this
+ * can leave the hot ledger without changing a single reported number.
+ */
+const DEFAULT_LEDGER_RETENTION_DAYS = 120;
 
 const DEFAULT_BUDGETS = {
   currency: "USD",
@@ -35,7 +43,16 @@ const DEFAULT_PROMOTIONS = { promotions: [] };
  * balance: observed tokens, reported cost and configured budgets remain
  * distinct so a host can explain where every number came from.
  */
-export function createUsageManager({ dataDir, now = () => new Date(), fetchImpl = globalThis.fetch } = {}) {
+export function createUsageManager({
+  dataDir,
+  now = () => new Date(),
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 15_000,
+  maxResponseBytes,
+  retryOptions,
+  ledgerMaxBytes = DEFAULT_LEDGER_MAX_BYTES,
+  ledgerRetentionDays = DEFAULT_LEDGER_RETENTION_DAYS
+} = {}) {
   if (!dataDir) throw new Error("Usage manager requires a dataDir");
   const files = {
     budgets: path.join(dataDir, "budgets.json"),
@@ -43,7 +60,9 @@ export function createUsageManager({ dataDir, now = () => new Date(), fetchImpl 
     providers: path.join(dataDir, "providers.json"),
     promotions: path.join(dataDir, "promotions.json"),
     catalog: path.join(dataDir, "model-catalog.json"),
-    ledger: path.join(dataDir, "usage-ledger.jsonl")
+    ledger: path.join(dataDir, "usage-ledger.jsonl"),
+    archive: path.join(dataDir, "usage-ledger.archive.jsonl"),
+    rollups: path.join(dataDir, "usage-rollups.json")
   };
 
   async function ensure() {
@@ -70,7 +89,49 @@ export function createUsageManager({ dataDir, now = () => new Date(), fetchImpl 
       source
     };
     await appendFile(files.ledger, `${JSON.stringify(entry)}\n`, "utf8");
+    await compactIfNeeded();
     return entry;
+  }
+
+  /**
+   * Every status/report call parses the whole ledger, so an unbounded file makes
+   * every reply slower forever. Once it crosses the size limit, entries older
+   * than the retention window move to an append-only archive and are folded into
+   * per-month rollups, keeping the historical totals available without keeping
+   * every line hot.
+   */
+  async function compactIfNeeded({ force = false } = {}) {
+    if (!force) {
+      try {
+        const info = await stat(files.ledger);
+        if (info.size < ledgerMaxBytes) return null;
+      } catch {
+        return null;
+      }
+    }
+
+    const entries = await readLedger(files.ledger);
+    const cutoff = new Date(now().getTime() - ledgerRetentionDays * 86_400_000);
+    const retained = [];
+    const expired = [];
+    for (const entry of entries) {
+      (new Date(entry.timestamp) < cutoff ? expired : retained).push(entry);
+    }
+    if (!expired.length) return { compacted: false, reason: "nothing older than the retention window", retained: retained.length };
+
+    const rollups = await readJson(files.rollups, { months: {} });
+    for (const entry of expired) {
+      const month = String(entry.timestamp).slice(0, 7);
+      const key = `${entry.agent}:${entry.model ?? "default"}`;
+      rollups.months[month] ??= {};
+      rollups.months[month][key] = addUsage(rollups.months[month][key] ?? emptyTotals(), entry);
+    }
+    rollups.compactedAt = now().toISOString();
+
+    await appendFile(files.archive, expired.map((entry) => `${JSON.stringify(entry)}\n`).join(""), "utf8");
+    await writeJson(files.rollups, rollups);
+    await writeLedgerAtomic(files.ledger, retained);
+    return { compacted: true, archived: expired.length, retained: retained.length };
   }
 
   async function status({ period = "month", agent, model } = {}) {
@@ -164,13 +225,26 @@ export function createUsageManager({ dataDir, now = () => new Date(), fetchImpl 
     if (typeof fetchImpl !== "function") throw new Error("No fetch implementation is available for provider sync.");
     await ensure();
     const headers = { Authorization: `Bearer ${apiKey}` };
-    const [creditsResponse, modelsResponse] = await Promise.all([
-      fetchImpl("https://openrouter.ai/api/v1/credits", { headers }),
-      fetchImpl("https://openrouter.ai/api/v1/models", { headers })
-    ]);
-    if (!creditsResponse.ok) throw new Error(`OpenRouter credits request failed (${creditsResponse.status}). A management key may be required.`);
-    if (!modelsResponse.ok) throw new Error(`OpenRouter model catalog request failed (${modelsResponse.status}).`);
-    const [creditsPayload, modelsPayload] = await Promise.all([creditsResponse.json(), modelsResponse.json()]);
+    const deadline = deadlineSignal(undefined, timeoutMs, "OpenRouter sync");
+    const options = { headers, signal: deadline.signal, redirect: "error" };
+    let creditsResponse;
+    let modelsResponse;
+    let creditsPayload;
+    let modelsPayload;
+    try {
+      [creditsResponse, modelsResponse] = await Promise.all([
+        fetchWithRetry(fetchImpl, "https://openrouter.ai/api/v1/credits", options, retryOptions),
+        fetchWithRetry(fetchImpl, "https://openrouter.ai/api/v1/models", options, retryOptions)
+      ]);
+      if (!creditsResponse.ok) throw new Error(`OpenRouter credits request failed (${creditsResponse.status}). A management key may be required.`);
+      if (!modelsResponse.ok) throw new Error(`OpenRouter model catalog request failed (${modelsResponse.status}).`);
+      [creditsPayload, modelsPayload] = await Promise.all([
+        readJsonResponse(creditsResponse, { maxBytes: maxResponseBytes, label: "OpenRouter credits response" }),
+        readJsonResponse(modelsResponse, { maxBytes: maxResponseBytes, label: "OpenRouter catalog response" })
+      ]);
+    } finally {
+      deadline.cleanup();
+    }
     const credits = creditsPayload.data ?? creditsPayload;
     const models = (modelsPayload.data ?? []).map((model) => ({
       id: model.id,
@@ -199,7 +273,13 @@ export function createUsageManager({ dataDir, now = () => new Date(), fetchImpl 
     return { provider: "openrouter", credits: providers.openrouter.credits, modelCount: models.length, syncedAt: providers.openrouter.syncedAt };
   }
 
-  return { ensure, record, status, report, recommend, check, syncOpenRouter, files };
+  return { ensure, record, status, report, recommend, check, syncOpenRouter, compactIfNeeded, files };
+}
+
+async function writeLedgerAtomic(file, entries) {
+  const temporary = `${file}.tmp`;
+  await writeFile(temporary, entries.map((entry) => `${JSON.stringify(entry)}\n`).join(""), "utf8");
+  await rename(temporary, file);
 }
 
 async function ensureJson(file, fallback) {

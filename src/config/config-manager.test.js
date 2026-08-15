@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -17,9 +17,34 @@ test("stages, applies and rolls back a validated proposal", async () => {
   assert.equal(await manager.get("budgets.periods.monthly"), 20);
 });
 
+test("keeps only the most recent proposals and rollback snapshots", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-config-"));
+  const manager = createConfigManager({ dataDir, retainedProposals: 3, retainedBackups: 2 });
+  await manager.ensure();
+  for (let index = 0; index < 6; index += 1) {
+    const proposal = await manager.stage({
+      id: `cfg_${String(index).padStart(4, "0")}`,
+      summary: `change ${index}`,
+      changes: [{ file: "budgets", path: "periods.monthly", value: index }]
+    });
+    await manager.apply(proposal.id);
+  }
+
+  const proposals = await readdir(manager.proposalsDir);
+  const backups = await readdir(manager.historyDir);
+  assert.equal(proposals.length, 3);
+  assert.equal(backups.length, 2);
+  assert.ok(proposals.includes("cfg_0005.json"), "the newest proposal survives pruning");
+  assert.equal(await manager.get("budgets.periods.monthly"), 5, "pruning never touches the live configuration");
+});
+
 test("rejects secret and unsafe proposal paths", () => {
   assert.throws(() => validateProposal({ changes: [{ file: "settings", path: "provider.apiKey", value: "secret" }] }), /Secrets cannot/);
   assert.throws(() => validateProposal({ changes: [{ file: "settings", path: "__proto__.polluted", value: true }] }), /Unsafe/);
+  assert.throws(() => validateProposal({ changes: [{ file: "settings", path: "provider.password", value: "secret" }] }), /Secrets cannot/);
+  assert.throws(() => validateProposal({ changes: [{ file: "settings", path: "provider.credential", value: "secret" }] }), /Secrets cannot/);
+  assert.throws(() => validateProposal({ changes: Array.from({ length: 101 }, () => ({ file: "settings", path: "safe", value: true })) }), /more than 100/);
+  assert.throws(() => validateProposal({ changes: [{ file: "settings", path: "safe", value: "x".repeat(300_000) }] }), /too large/);
 });
 
 test("writes settings as versioned JSON", async () => {

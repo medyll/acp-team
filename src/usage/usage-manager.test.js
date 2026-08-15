@@ -17,6 +17,38 @@ test("records measured usage and reports it for the current month", async () => 
   assert.match(await readFile(manager.files.ledger, "utf8"), /agent-reported/);
 });
 
+test("compacts stale ledger entries into rollups without changing reported totals", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
+  const clock = { value: new Date("2026-01-01T12:00:00Z") };
+  const manager = createUsageManager({ dataDir, now: () => clock.value, ledgerRetentionDays: 30 });
+  await manager.record({ agent: "codex", model: "old", usage: { total_tokens: 100 } });
+
+  clock.value = new Date("2026-08-10T12:00:00Z");
+  await manager.record({ agent: "codex", model: "recent", usage: { total_tokens: 7 } });
+  const before = await manager.status({ period: "month" });
+
+  const result = await manager.compactIfNeeded({ force: true });
+  assert.deepEqual(result, { compacted: true, archived: 1, retained: 1 });
+
+  const after = await manager.status({ period: "month" });
+  assert.deepEqual(after.totals, before.totals, "compaction must not move a single reported number");
+
+  const retained = await readFile(manager.files.ledger, "utf8");
+  assert.equal(retained.includes('"old"'), false);
+  assert.match(await readFile(manager.files.archive, "utf8"), /"old"/);
+  const rollups = JSON.parse(await readFile(manager.files.rollups, "utf8"));
+  assert.equal(rollups.months["2026-01"]["codex:old"].tokens.total, 100);
+});
+
+test("leaves the ledger alone when nothing is older than the retention window", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
+  const manager = createUsageManager({ dataDir, now: () => new Date("2026-08-10T12:00:00Z") });
+  await manager.record({ agent: "codex", usage: { total_tokens: 1 } });
+  const result = await manager.compactIfNeeded({ force: true });
+  assert.equal(result.compacted, false);
+  assert.equal(result.retained, 1);
+});
+
 test("recommends a cheap profile without exposing disabled models", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
   const manager = createUsageManager({ dataDir });
@@ -54,4 +86,22 @@ test("synchronizes OpenRouter credits and its model catalog without storing the 
   assert.equal(calls.length, 2);
   assert.equal(calls[0].options.headers.Authorization, "Bearer secret-key");
   assert.doesNotMatch(await readFile(manager.files.providers, "utf8"), /secret-key/);
+});
+
+test("retries transient OpenRouter read failures", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
+  const attempts = new Map();
+  const manager = createUsageManager({
+    dataDir,
+    retryOptions: { sleep: async () => {}, random: () => 0 },
+    fetchImpl: async (url) => {
+      const count = (attempts.get(url) ?? 0) + 1;
+      attempts.set(url, count);
+      if (count === 1) return new Response("busy", { status: 503 });
+      const body = url.endsWith("credits") ? { data: { total_credits: 1, total_usage: 0 } } : { data: [] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }
+  });
+  await manager.syncOpenRouter({ apiKey: "secret" });
+  assert.deepEqual([...attempts.values()], [2, 2]);
 });

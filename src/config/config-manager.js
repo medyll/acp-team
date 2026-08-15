@@ -1,5 +1,9 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+/** Proposals and rollback snapshots accumulate forever otherwise. */
+const DEFAULT_RETAINED_PROPOSALS = 50;
+const DEFAULT_RETAINED_BACKUPS = 30;
 
 const SETTINGS_DEFAULTS = {
   schemaVersion: 1,
@@ -17,7 +21,12 @@ const MANAGED_FILES = {
   catalog: "model-catalog.json"
 };
 
-export function createConfigManager({ dataDir, now = () => new Date() } = {}) {
+export function createConfigManager({
+  dataDir,
+  now = () => new Date(),
+  retainedProposals = DEFAULT_RETAINED_PROPOSALS,
+  retainedBackups = DEFAULT_RETAINED_BACKUPS
+} = {}) {
   if (!dataDir) throw new Error("Config manager requires a dataDir");
   const proposalsDir = path.join(dataDir, "proposals");
   const historyDir = path.join(dataDir, "history");
@@ -59,7 +68,25 @@ export function createConfigManager({ dataDir, now = () => new Date() } = {}) {
     const document = { ...proposal, id, schemaVersion: 1, createdAt: now().toISOString(), status: "proposed" };
     const file = path.join(proposalsDir, `${id}.json`);
     await writeJsonAtomic(file, document);
+    await prune(proposalsDir, retainedProposals);
     return { ...document, file };
+  }
+
+  /**
+   * Ids embed a sortable timestamp, so keeping the lexicographic tail keeps the
+   * most recent entries. Pruning never fails a caller: losing an old snapshot is
+   * not worth failing a configuration change over.
+   */
+  async function prune(directory, keep) {
+    if (!Number.isFinite(keep) || keep <= 0) return [];
+    try {
+      const names = (await readdir(directory)).filter((name) => name.endsWith(".json")).sort();
+      const stale = names.slice(0, Math.max(0, names.length - keep));
+      for (const name of stale) await unlink(path.join(directory, name)).catch(() => {});
+      return stale;
+    } catch {
+      return [];
+    }
   }
 
   async function loadProposal(id) {
@@ -95,6 +122,7 @@ export function createConfigManager({ dataDir, now = () => new Date() } = {}) {
     proposal.appliedAt = now().toISOString();
     proposal.backupId = backupId;
     await writeJsonAtomic(path.join(proposalsDir, `${proposal.id}.json`), proposal);
+    await prune(historyDir, retainedBackups);
     return { proposalId: proposal.id, backupId, files: [...changed.keys()] };
   }
 
@@ -108,17 +136,24 @@ export function createConfigManager({ dataDir, now = () => new Date() } = {}) {
     return { backupId, files: Object.keys(backup.files ?? {}) };
   }
 
-  return { ensure, inspect, get, set, stage, loadProposal, apply, rollback, dataDir };
+  return { ensure, inspect, get, set, stage, loadProposal, apply, rollback, prune, dataDir, proposalsDir, historyDir };
 }
 
 export function validateProposal(proposal) {
   if (!proposal || !Array.isArray(proposal.changes)) throw new Error("Proposal must contain a changes array");
+  if (proposal.changes.length > 100) throw new Error("A proposal cannot contain more than 100 changes");
   for (const change of proposal.changes) {
     assertManagedFile(change.file);
     if (!change.path || typeof change.path !== "string") throw new Error("Every change needs a property path");
+    if (change.path.length > 256) throw new Error("Configuration property paths cannot exceed 256 characters");
     splitPropertyPath(change.path);
-    if (change.path.toLowerCase().includes("key") || change.path.toLowerCase().includes("secret") || change.path.toLowerCase().includes("token")) {
+    if (/(?:key|secret|token|password|credential|authorization|bearer)/i.test(change.path)) {
       throw new Error(`Secrets cannot be written through configuration proposals: ${change.file}.${change.path}`);
+    }
+    let serialized;
+    try { serialized = JSON.stringify(change.value); } catch { throw new Error(`Configuration value must be JSON-serializable: ${change.file}.${change.path}`); }
+    if (serialized === undefined || Buffer.byteLength(serialized) > 256 * 1024) {
+      throw new Error(`Configuration value is too large: ${change.file}.${change.path}`);
     }
   }
   return proposal;
