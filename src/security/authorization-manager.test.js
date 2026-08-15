@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import test from "node:test";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createAuthorizationManager } from "./authorization-manager.js";
 
 test("issues scoped one-time tokens without storing their plaintext", async () => {
@@ -111,3 +113,46 @@ test("serializes concurrent consumption of a one-use token", async () => {
   ]);
   assert.deepEqual(results.map((result) => result.status).sort(), ["fulfilled", "rejected"]);
 });
+
+test("separate processes cannot spend a one-use token twice", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "acp-auth-process-"));
+  const manager = createAuthorizationManager({ dataDir });
+  const issued = await manager.issue({ agent: "codex", cwd: dataDir, mode: "default", ttlMs: 60_000 });
+  const startAt = Date.now() + 500;
+  const workers = Array.from({ length: 6 }, () => consumeInChild({ dataDir, cwd: dataDir, token: issued.token, startAt }));
+
+  const results = await Promise.all(workers);
+  assert.equal(results.filter((result) => result === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result === "rejected").length, 5);
+  assert.equal(await usesLeft(manager), 0);
+});
+
+function consumeInChild({ dataDir, cwd, token, startAt }) {
+  const moduleUrl = pathToFileURL(path.resolve("src/security/authorization-manager.js")).href;
+  const source = `
+    const [moduleUrl, dataDir, cwd, token, startAt] = process.argv.slice(1);
+    const { createAuthorizationManager } = await import(moduleUrl);
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(startAt) - Date.now())));
+    try {
+      await createAuthorizationManager({ dataDir }).consume({ token, agent: "codex", cwd, mode: "default" });
+      process.stdout.write("fulfilled");
+    } catch {
+      process.stdout.write("rejected");
+    }
+  `;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", source, moduleUrl, dataDir, cwd, token, String(startAt)], {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code !== 0) return reject(new Error(`Authorization worker exited ${code}: ${stderr}`));
+      resolve(stdout);
+    });
+  });
+}

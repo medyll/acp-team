@@ -1,8 +1,15 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import lockfile from "proper-lockfile";
 
 const MAX_TTL_MS = 24 * 60 * 60_000;
+const STORE_LOCK_OPTIONS = Object.freeze({
+  realpath: false,
+  stale: 10_000,
+  update: 2_000,
+  retries: { retries: 50, factor: 1, minTimeout: 25, maxTimeout: 25, randomize: true }
+});
 
 export function createAuthorizationManager({ dataDir, now = () => new Date() } = {}) {
   if (!dataDir) throw new Error("Authorization manager requires a dataDir");
@@ -111,13 +118,43 @@ export function createAuthorizationManager({ dataDir, now = () => new Date() } =
   }
 
   async function list() {
-    await tail;
-    return (await load()).map(publicEntry);
+    return exclusive(async () => (await load()).map(publicEntry));
   }
 
   function exclusive(operation) {
-    const result = tail.then(operation, operation);
+    const lockedOperation = () => withStoreLock(operation);
+    const result = tail.then(lockedOperation, lockedOperation);
     tail = result.catch(() => {});
+    return result;
+  }
+
+  async function withStoreLock(operation) {
+    await mkdir(dataDir, { recursive: true });
+    let compromised;
+    let release;
+    try {
+      release = await lockfile.lock(file, {
+        ...STORE_LOCK_OPTIONS,
+        onCompromised: (error) => { compromised = error; }
+      });
+    } catch (error) {
+      if (error.code === "ELOCKED") throw new Error("Authorization store is busy; retry the operation");
+      throw new Error(`Cannot lock authorization store: ${error.message}`);
+    }
+
+    let result;
+    let operationError;
+    try {
+      result = await operation();
+      if (compromised) throw new Error(`Authorization store lock was compromised: ${compromised.message}`);
+    } catch (error) {
+      operationError = error;
+    }
+
+    let releaseError;
+    try { await release(); } catch (error) { releaseError = error; }
+    if (operationError) throw operationError;
+    if (releaseError) throw new Error(`Cannot release authorization store lock: ${releaseError.message}`);
     return result;
   }
 
