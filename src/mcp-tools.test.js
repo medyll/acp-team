@@ -21,6 +21,7 @@ test("exposes supervised run controls without starting an agent", async () => {
     assert.deepEqual(names.sort(), [
       "agent_ask",
       "agent_cancel",
+      "agent_fanout",
       "agent_list",
       "agent_start",
       "agent_status",
@@ -37,6 +38,7 @@ test("exposes supervised run controls without starting an agent", async () => {
       "ollama_pull",
       "ollama_running",
       "ollama_status",
+      "usage_compact",
       "usage_report",
       "usage_status",
       "usage_sync"
