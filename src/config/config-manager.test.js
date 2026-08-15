@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -47,11 +47,30 @@ test("rejects secret and unsafe proposal paths", () => {
   assert.throws(() => validateProposal({ changes: [{ file: "settings", path: "safe", value: "x".repeat(300_000) }] }), /too large/);
 });
 
+test("rejects secrets written directly through config set", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-config-"));
+  const manager = createConfigManager({ dataDir });
+  await assert.rejects(() => manager.set("provider.password", "secret"), /Secrets cannot/);
+});
+
 test("writes settings as versioned JSON", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-settings-"));
   const manager = createConfigManager({ dataDir });
   await manager.ensure();
   const settings = JSON.parse(await readFile(path.join(dataDir, "settings.json"), "utf8"));
-  assert.equal(settings.schemaVersion, 1);
+  assert.equal(settings.schemaVersion, 2);
   assert.equal(settings.controller.default, "claude");
+  assert.equal(settings.runtime.maxConcurrentPerAgent, 2);
+});
+
+test("reads legacy settings through schema v2 defaults and migrates explicitly", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-settings-"));
+  const manager = createConfigManager({ dataDir });
+  await manager.ensure();
+  await writeFile(path.join(dataDir, "settings.json"), JSON.stringify({ schemaVersion: 1, interaction: { language: "en" } }));
+  const runtime = await manager.runtime();
+  assert.equal(runtime.interaction.language, "en");
+  assert.equal(runtime.runtime.resilience.retryAttempts, 3);
+  await manager.migrate();
+  assert.equal(JSON.parse(await readFile(path.join(dataDir, "settings.json"), "utf8")).schemaVersion, 2);
 });

@@ -8,37 +8,44 @@ import { createRunManager } from "./runs/run-manager.js";
 import { createRunJournal } from "./runs/run-journal.js";
 import { createUsageManager } from "./usage/usage-manager.js";
 import { createConfigManager } from "./config/config-manager.js";
+import { runtimeFromEnvironment } from "./config/runtime-config.js";
 import { registerAgentTools } from "./tools/agent-tools.js";
 import { registerUsageTools } from "./tools/usage-tools.js";
 import { registerConfigTools } from "./tools/config-tools.js";
 import { registerOllamaTools } from "./tools/ollama-tools.js";
+import { createAuthorizationManager } from "./security/authorization-manager.js";
+import { registerSystemTools } from "./tools/system-tools.js";
 
 const DEFAULT_CWD = process.env.AGENT_BRIDGE_CWD || process.cwd();
 const DATA_DIR = process.env.AGENT_BRIDGE_DATA_DIR || path.join(DEFAULT_CWD, ".acp-team");
 
-function positiveInt(value, fallback) {
-  const parsed = Number.parseInt(value ?? "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 const log = createLogger({ name: "acp-team" });
-const registry = createRegistry({ log });
-const usageManager = createUsageManager({ dataDir: DATA_DIR });
 const configManager = createConfigManager({ dataDir: DATA_DIR });
+const runtimeConfig = runtimeFromEnvironment(await configManager.runtime());
+const registry = createRegistry({ log, runtime: runtimeConfig });
+const usageManager = createUsageManager({
+  dataDir: DATA_DIR,
+  timeoutMs: runtimeConfig.resilience.httpTimeoutMs,
+  maxResponseBytes: runtimeConfig.resilience.maxResponseBytes,
+  retryOptions: { attempts: runtimeConfig.resilience.retryAttempts }
+});
+const authorizationManager = createAuthorizationManager({ dataDir: DATA_DIR });
 const journal = createRunJournal({ dataDir: DATA_DIR, onError: (error) => log.warn("run journal write failed", { error: error.message }) });
+await journal.markInterrupted();
 const runManager = createRunManager({
   registry,
   usageManager,
   journal,
-  maxConcurrentPerAgent: positiveInt(process.env.AGENT_BRIDGE_MAX_CONCURRENT, 2)
+  maxConcurrentPerAgent: runtimeConfig.maxConcurrentPerAgent
 });
 
 const server = new McpServer({ name: "acp-team", version: "1.0.0" });
 
-registerAgentTools(server, { registry, runManager, usageManager, defaultCwd: DEFAULT_CWD, log });
+registerAgentTools(server, { registry, runManager, usageManager, authorizationManager, journal, defaultCwd: DEFAULT_CWD, log });
 registerUsageTools(server, { registry, usageManager });
 registerConfigTools(server, { configManager });
 if (registry.ids.includes("ollama")) registerOllamaTools(server, { registry, log });
+registerSystemTools(server, { configManager, registry, dataDir: DATA_DIR });
 
 const shutdown = () => {
   runManager.stopAll();

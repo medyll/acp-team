@@ -90,6 +90,25 @@ export function createRunJournal({
     return collected.slice(-limit);
   }
 
+  async function markInterrupted() {
+    const entries = await history({ limit: 100_000 });
+    const latest = new Map();
+    for (const entry of entries) latest.set(entry.runId, entry);
+    let marked = 0;
+    for (const entry of latest.values()) {
+      if (!["queued", "waiting", "running", "cancelling"].includes(entry.status)) continue;
+      await record({
+        runId: entry.runId,
+        agent: entry.agent,
+        status: "interrupted",
+        sessionId: entry.sessionId,
+        event: { type: "run.interrupted", at: new Date().toISOString(), reason: "bridge restarted before completion" }
+      });
+      marked += 1;
+    }
+    return marked;
+  }
+
   async function readGeneration(target, runId) {
     let raw;
     try {
@@ -116,5 +135,5 @@ export function createRunJournal({
     return tail;
   }
 
-  return { record, history, flush, file };
+  return { record, history, markInterrupted, flush, file };
 }

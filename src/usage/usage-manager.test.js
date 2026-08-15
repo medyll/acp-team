@@ -105,3 +105,16 @@ test("retries transient OpenRouter read failures", async () => {
   await manager.syncOpenRouter({ apiKey: "secret" });
   assert.deepEqual([...attempts.values()], [2, 2]);
 });
+
+test("ratings and observed outcomes reorder recommendations", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
+  const manager = createUsageManager({ dataDir, now: () => new Date("2026-08-10T12:00:00Z") });
+  await manager.record({ agent: "codex", model: "default", runId: "r1", outcome: "failed", latencyMs: 100 });
+  await manager.record({ agent: "opencode", model: "default", runId: "r2", outcome: "completed", latencyMs: 50 });
+  await manager.rate({ runId: "r2", rating: 5, note: "excellent" });
+  const recommendation = await manager.recommend({ task: "implement feature", profile: "standard" });
+  assert.equal(recommendation.candidates[0], "opencode/default");
+  assert.equal(recommendation.ratings[0].averageRating, 5);
+  const ratings = await manager.ratings({ agent: "opencode" });
+  assert.equal(ratings.entries[0].note, "excellent");
+});

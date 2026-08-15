@@ -52,11 +52,22 @@ export async function runInstaller({ action, name, withModel, controllerId, dryR
 export function validateInstallPlan(plan) {
   if (!plan || typeof plan !== "object") throw new Error("Invalid installation plan");
   if (plan.sourceType !== "official") throw new Error("Installation refused: the proposed source is not marked official");
+  if (typeof plan.packageName !== "string" || !plan.packageName.trim()) throw new Error("Installation refused: packageName is required");
+  if (typeof plan.publisher !== "string" || !plan.publisher.trim()) throw new Error("Installation refused: publisher is required");
+  if (typeof plan.version !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._+-]{0,63}$/.test(plan.version) || ["latest", "next", "canary"].includes(plan.version.toLowerCase())) {
+    throw new Error("Installation refused: an explicit non-floating version is required");
+  }
   for (const field of ["officialUrl", "sourceUrl"]) {
     const url = new URL(plan[field]);
     if (url.protocol !== "https:") throw new Error(`Installation refused: ${field} must use HTTPS`);
   }
+  if (!Array.isArray(plan.evidence) || !plan.evidence.length || plan.evidence.length > 5) throw new Error("Installation refused: 1-5 provenance evidence URLs are required");
+  const officialHost = new URL(plan.officialUrl).hostname;
+  const evidenceUrls = plan.evidence.map((value) => new URL(value));
+  if (evidenceUrls.some((url) => url.protocol !== "https:")) throw new Error("Installation refused: provenance evidence must use HTTPS");
+  if (!evidenceUrls.some((url) => url.hostname === officialHost)) throw new Error("Installation refused: provenance must include the official domain");
   validateCommand(plan.install, "installation");
+  if (!plan.install.args.some((arg) => arg.includes(plan.version))) throw new Error("Installation refused: command must pin the proposed version");
   if (plan.verify) validateCommand(plan.verify, "verification");
   return plan;
 }
@@ -73,7 +84,7 @@ function validateCommand(command, label) {
 }
 
 function installerPrompt(name) {
-  return `Research how to install the ${name} command-line interface on ${process.platform}. Use web research and only the vendor's official documentation or official package registry entry. Keep the information concise. Prefer a package manager installation. Do not propose curl-pipe-shell, PowerShell download-and-execute, sudo, secrets, environment values, or chained commands. The install and verification commands must each be one executable plus an argument array. Supported install programs: ${[...INSTALLERS].join(", ")}. The verification program should be the installed CLI with --version or an equivalent read-only flag. If no supported official installation exists, state that in warnings.\n\nJSON shape:\n{"name":"CLI name","summary":"French summary","officialUrl":"https://...","sourceUrl":"https://...","sourceType":"official","install":{"program":"npm","args":["install","-g","package"]},"verify":{"program":"vendor-cli","args":["--version"]},"authentication":{"method":"OAuth or API key","steps":["short French step"],"storesSecrets":"vendor-managed"},"warnings":["warning"]}`;
+  return `Research how to install the ${name} command-line interface on ${process.platform}. Use web research and only the vendor's official documentation or official package registry entry. Establish the package owner from the official vendor domain and cite 1-5 HTTPS evidence URLs including that domain. Keep the information concise. Pin one explicit stable version; never use latest, next or canary. Prefer a package manager installation. Do not propose curl-pipe-shell, PowerShell download-and-execute, sudo, secrets, environment values, or chained commands. The install and verification commands must each be one executable plus an argument array. Supported install programs: ${[...INSTALLERS].join(", ")}. The verification program should be the installed CLI with --version or an equivalent read-only flag. If provenance cannot be established, do not invent it and state that in warnings.\n\nJSON shape:\n{"name":"CLI name","packageName":"registry package","publisher":"verified publisher","version":"1.2.3","summary":"French summary","officialUrl":"https://vendor.example","sourceUrl":"https://registry.example/package","evidence":["https://vendor.example/install"],"sourceType":"official","install":{"program":"npm","args":["install","-g","package@1.2.3"]},"verify":{"program":"vendor-cli","args":["--version"]},"authentication":{"method":"OAuth or API key","steps":["short French step"],"storesSecrets":"vendor-managed"},"warnings":["warning"]}`;
 }
 
 async function savePlan(dataDir, plan) {
@@ -89,6 +100,8 @@ function renderInstallPlan(terminal, plan, file) {
   terminal.log(`\n${plan.name} — ${plan.summary}`);
   terminal.log(`Source officielle : ${plan.officialUrl}`);
   terminal.log(`Documentation     : ${plan.sourceUrl}`);
+  terminal.log(`Paquet/version    : ${plan.packageName}@${plan.version} (${plan.publisher})`);
+  for (const evidence of plan.evidence) terminal.log(`Preuve             : ${evidence}`);
   terminal.log(`Installation      : ${renderCommand(plan.install)}`);
   if (plan.verify) terminal.log(`Vérification      : ${renderCommand(plan.verify)}`);
   terminal.log(`Authentification  : ${plan.authentication?.method ?? "non documentée"}`);

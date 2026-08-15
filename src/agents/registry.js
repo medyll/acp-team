@@ -2,46 +2,59 @@ import { createKimiAdapter } from "./kimi/kimi-adapter.js";
 import { createCodexAdapter } from "./codex/codex-adapter.js";
 import { createOpenCodeAdapter } from "./opencode/opencode-adapter.js";
 import { createOllamaAdapter } from "../ollama/ollama-adapter.js";
+import { createDeclarativeAdapter, validateAgentDefinition } from "./declarative-adapter.js";
+import { runtimeFromEnvironment } from "../config/runtime-config.js";
 
 /**
  * Builds every adapter the bridge exposes. Adding an agent means adding a
  * folder under src/agents/ and one line here.
  */
-export function createRegistry({ log }) {
+export function createRegistry({ log, settings, runtime, env = process.env } = {}) {
+  runtime ??= runtimeFromEnvironment(settings, env);
+  const configured = runtime.agents;
+  const resilience = runtime.resilience;
+  const builtInIds = ["kimi", "codex", "opencode", "ollama"];
   const builders = {
     kimi: () =>
       createKimiAdapter({
-        defaultModel: process.env.KIMI_BRIDGE_MODEL,
-        defaultMode: process.env.KIMI_BRIDGE_MODE || "auto",
-        permissionPolicy: process.env.KIMI_BRIDGE_PERMISSION || "allow",
+        defaultModel: configured.kimi.model,
+        defaultMode: configured.kimi.mode,
+        permissionPolicy: configured.kimi.permission,
+        clientOptions: { requestTimeoutMs: resilience.agentTimeoutMs },
         log
       }),
     codex: () =>
       createCodexAdapter({
-        defaultModel: process.env.CODEX_BRIDGE_MODEL,
-        defaultMode: process.env.CODEX_BRIDGE_MODE || "default",
+        defaultModel: configured.codex.model,
+        defaultMode: configured.codex.mode,
+        timeoutMs: resilience.agentTimeoutMs,
         log
       }),
     opencode: () =>
       createOpenCodeAdapter({
-        defaultModel: process.env.OPENCODE_BRIDGE_MODEL,
-        defaultMode: process.env.OPENCODE_BRIDGE_MODE || "default",
-        permissionPolicy: process.env.OPENCODE_BRIDGE_PERMISSION || "allow",
+        defaultModel: configured.opencode.model,
+        defaultMode: configured.opencode.mode,
+        permissionPolicy: configured.opencode.permission,
+        clientOptions: { requestTimeoutMs: resilience.agentTimeoutMs },
         log
       }),
     ollama: () =>
       createOllamaAdapter({
-        defaultModel: process.env.OLLAMA_BRIDGE_MODEL,
+        defaultModel: configured.ollama.model,
+        clientOptions: { timeoutMs: resilience.httpTimeoutMs, maxResponseBytes: resilience.maxResponseBytes },
         log
       })
   };
 
+  for (const definition of runtime.customAgents ?? []) {
+    validateAgentDefinition(definition);
+    if (builders[definition.id]) throw new Error(`Custom agent id conflicts with built-in agent "${definition.id}"`);
+    builders[definition.id] = () => createDeclarativeAdapter(definition, { log, requestTimeoutMs: resilience.agentTimeoutMs });
+  }
+
   // Installing every CLI is optional: AGENT_BRIDGE_AGENTS narrows the roster so a
   // host only ever sees agents that can actually answer.
-  const requested = (process.env.AGENT_BRIDGE_AGENTS || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const requested = runtime.enabledAgents ?? builtInIds;
   const unknown = requested.filter((id) => !builders[id]);
   if (unknown.length) {
     throw new Error(

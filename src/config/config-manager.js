@@ -1,16 +1,10 @@
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { normalizeSettings, SETTINGS_DEFAULTS, validateRuntimeSettings } from "./runtime-config.js";
 
 /** Proposals and rollback snapshots accumulate forever otherwise. */
 const DEFAULT_RETAINED_PROPOSALS = 50;
 const DEFAULT_RETAINED_BACKUPS = 30;
-
-const SETTINGS_DEFAULTS = {
-  schemaVersion: 1,
-  controller: { default: "claude", model: null },
-  interaction: { language: "fr", confirmWrites: true },
-  discovery: { requireOfficialSources: true, maxAgeDays: 30 }
-};
 
 const MANAGED_FILES = {
   settings: "settings.json",
@@ -40,7 +34,8 @@ export function createConfigManager({
     await ensure();
     const files = {};
     for (const [name, filename] of Object.entries(MANAGED_FILES)) {
-      files[name] = await readJson(path.join(dataDir, filename), name === "settings" ? SETTINGS_DEFAULTS : {});
+      const document = await readJson(path.join(dataDir, filename), name === "settings" ? SETTINGS_DEFAULTS : {});
+      files[name] = name === "settings" ? normalizeSettings(document) : document;
     }
     return { dataDir, files };
   }
@@ -54,9 +49,12 @@ export function createConfigManager({
     const [file, ...segments] = splitKey(normalizeConfigKey(key));
     assertManagedFile(file);
     if (!segments.length) throw new Error("A configuration key must include a property path");
+    assertNonSecretPath(segments.join("."), file);
     const target = path.join(dataDir, MANAGED_FILES[file]);
-    const document = await readJson(target, file === "settings" ? SETTINGS_DEFAULTS : {});
+    const raw = await readJson(target, file === "settings" ? SETTINGS_DEFAULTS : {});
+    const document = file === "settings" ? normalizeSettings(raw) : raw;
     setPath(document, segments, value);
+    if (file === "settings") validateRuntimeSettings(document);
     await writeJsonAtomic(target, document);
     return { key, value };
   }
@@ -100,14 +98,6 @@ export function createConfigManager({
     validateProposal(proposal);
     if (proposal.status === "applied") throw new Error(`Proposal ${proposal.id} is already applied`);
     const snapshot = await inspect();
-    const backupId = `history_${stamp(now())}_${proposal.id}`;
-    await writeJsonAtomic(path.join(historyDir, `${backupId}.json`), {
-      id: backupId,
-      createdAt: now().toISOString(),
-      proposalId: proposal.id,
-      files: snapshot.files
-    });
-
     const changed = new Map();
     for (const change of proposal.changes) {
       assertManagedFile(change.file);
@@ -115,6 +105,14 @@ export function createConfigManager({
       setPath(document, splitPropertyPath(change.path), change.value);
       changed.set(change.file, document);
     }
+    if (changed.has("settings")) validateRuntimeSettings(normalizeSettings(changed.get("settings")));
+    const backupId = `history_${stamp(now())}_${proposal.id}`;
+    await writeJsonAtomic(path.join(historyDir, `${backupId}.json`), {
+      id: backupId,
+      createdAt: now().toISOString(),
+      proposalId: proposal.id,
+      files: snapshot.files
+    });
     for (const [file, document] of changed) {
       await writeJsonAtomic(path.join(dataDir, MANAGED_FILES[file]), document);
     }
@@ -136,7 +134,19 @@ export function createConfigManager({
     return { backupId, files: Object.keys(backup.files ?? {}) };
   }
 
-  return { ensure, inspect, get, set, stage, loadProposal, apply, rollback, prune, dataDir, proposalsDir, historyDir };
+  async function runtime() {
+    await ensure();
+    return normalizeSettings(await readJson(path.join(dataDir, MANAGED_FILES.settings), SETTINGS_DEFAULTS));
+  }
+
+  async function migrate() {
+    const settings = await runtime();
+    validateRuntimeSettings(settings);
+    await writeJsonAtomic(path.join(dataDir, MANAGED_FILES.settings), settings);
+    return { schemaVersion: settings.schemaVersion, file: path.join(dataDir, MANAGED_FILES.settings) };
+  }
+
+  return { ensure, inspect, get, set, stage, loadProposal, apply, rollback, prune, runtime, migrate, dataDir, proposalsDir, historyDir };
 }
 
 export function validateProposal(proposal) {
@@ -147,9 +157,7 @@ export function validateProposal(proposal) {
     if (!change.path || typeof change.path !== "string") throw new Error("Every change needs a property path");
     if (change.path.length > 256) throw new Error("Configuration property paths cannot exceed 256 characters");
     splitPropertyPath(change.path);
-    if (/(?:key|secret|token|password|credential|authorization|bearer)/i.test(change.path)) {
-      throw new Error(`Secrets cannot be written through configuration proposals: ${change.file}.${change.path}`);
-    }
+    assertNonSecretPath(change.path, change.file);
     let serialized;
     try { serialized = JSON.stringify(change.value); } catch { throw new Error(`Configuration value must be JSON-serializable: ${change.file}.${change.path}`); }
     if (serialized === undefined || Buffer.byteLength(serialized) > 256 * 1024) {
@@ -157,6 +165,12 @@ export function validateProposal(proposal) {
     }
   }
   return proposal;
+}
+
+function assertNonSecretPath(propertyPath, file) {
+  if (/(?:key|secret|token|password|credential|authorization|bearer)/i.test(propertyPath)) {
+    throw new Error(`Secrets cannot be written through configuration: ${file}.${propertyPath}`);
+  }
 }
 
 function splitKey(key) {

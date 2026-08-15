@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createOllamaClient } from "./ollama-client.js";
 
-export function createOllamaAdapter({ defaultModel = process.env.OLLAMA_BRIDGE_MODEL, client = createOllamaClient(), log = () => {} } = {}) {
+export function createOllamaAdapter({ defaultModel = process.env.OLLAMA_BRIDGE_MODEL, clientOptions, client = createOllamaClient(clientOptions), log = () => {} } = {}) {
   const sessions = new Map();
   const byCwd = new Map();
   const live = new Map();

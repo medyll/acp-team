@@ -36,6 +36,32 @@ export function registerUsageTools(server, { registry, usageManager }) {
   );
 
   server.registerTool(
+    "model_rate",
+    {
+      title: "Rate a model result",
+      description: "Attach a 1-5 human rating to a run or agent/model pair. Ratings influence future recommendations.",
+      inputSchema: {
+        run_id: z.string().optional(),
+        agent: AgentId.optional(),
+        model: z.string().optional(),
+        rating: z.number().int().min(1).max(5),
+        note: z.string().max(500).optional()
+      }
+    },
+    async ({ run_id, agent, model, rating, note }) => jsonResult(await usageManager.rate({ runId: run_id, agent, model, rating, note }))
+  );
+
+  server.registerTool(
+    "model_ratings",
+    {
+      title: "Model ratings and observed quality",
+      description: "Show human ratings alongside observed success, latency and cost signals.",
+      inputSchema: { agent: AgentId.optional(), model: z.string().optional() }
+    },
+    async ({ agent, model }) => jsonResult(await usageManager.ratings({ agent, model }))
+  );
+
+  server.registerTool(
     "budget_check",
     {
       title: "Check a task budget",

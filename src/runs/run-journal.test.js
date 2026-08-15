@@ -70,3 +70,12 @@ test("drops the oldest generations beyond the retention count", async () => {
   assert.ok(entries.length < 20, "pruned generations are gone");
   assert.equal(entries.at(-1).runId, "r19", "the newest entries are the ones kept");
 });
+
+test("marks unfinished runs as interrupted after restart", async () => {
+  const journal = createRunJournal({ dataDir: await journalDir() });
+  await journal.record({ runId: "active", agent: "codex", status: "running", event: { type: "run.admitted" } });
+  await journal.record({ runId: "done", agent: "kimi", status: "completed", event: { type: "run.completed" } });
+  assert.equal(await journal.markInterrupted(), 1);
+  const active = await journal.history({ runId: "active" });
+  assert.equal(active.at(-1).status, "interrupted");
+});

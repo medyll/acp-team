@@ -62,7 +62,8 @@ export function createUsageManager({
     catalog: path.join(dataDir, "model-catalog.json"),
     ledger: path.join(dataDir, "usage-ledger.jsonl"),
     archive: path.join(dataDir, "usage-ledger.archive.jsonl"),
-    rollups: path.join(dataDir, "usage-rollups.json")
+    rollups: path.join(dataDir, "usage-rollups.json"),
+    ratings: path.join(dataDir, "model-ratings.jsonl")
   };
 
   async function ensure() {
@@ -75,8 +76,8 @@ export function createUsageManager({
     ]);
   }
 
-  async function record({ agent, model, sessionId, runId, usage, cost, source = "agent-reported" }) {
-    if (!usage && !cost) return null;
+  async function record({ agent, model, sessionId, runId, usage, cost, outcome, latencyMs, source = "agent-reported" }) {
+    if (!usage && !cost && !outcome) return null;
     await ensure();
     const entry = {
       timestamp: now().toISOString(),
@@ -86,6 +87,8 @@ export function createUsageManager({
       ...(runId ? { runId } : {}),
       ...(usage ? { usage: normalizeUsage(usage) } : {}),
       ...(cost ? { cost } : {}),
+      ...(outcome ? { outcome } : {}),
+      ...(Number.isFinite(latencyMs) ? { latencyMs } : {}),
       source
     };
     await appendFile(files.ledger, `${JSON.stringify(entry)}\n`, "utf8");
@@ -194,14 +197,60 @@ export function createUsageManager({
     const candidates = (models.profiles?.[requested] ?? []).filter((candidate) => !models.disabled?.includes(candidate));
     const limit = budgets.profiles?.[requested]?.maxEstimatedCost ?? null;
     const blocked = current.budget.status === "blocked" && requested === "premium";
+    const allowedCandidates = blocked ? candidates.filter((candidate) => !candidate.startsWith("codex/")) : candidates;
+    const observed = await ratingSummary({ candidates: allowedCandidates });
+    const ranked = [...allowedCandidates].sort((left, right) => (observed[right]?.score ?? 50) - (observed[left]?.score ?? 50));
     return {
       profile: requested,
-      candidates: blocked ? candidates.filter((candidate) => !candidate.startsWith("codex/")) : candidates,
+      candidates: ranked,
+      ratings: ranked.map((candidate) => ({ candidate, ...(observed[candidate] ?? { score: 50, confidence: "none" }) })),
       decision: blocked ? "degraded" : candidates.length ? "allowed" : "no-candidate",
       reason: blocked ? "Monthly budget is exhausted; premium subscription models were excluded." : "Matched the configured model profile.",
       maxEstimatedCost: limit,
       budget: current.budget
     };
+  }
+
+  async function rate({ runId, agent, model, rating, note } = {}) {
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new Error("Rating must be an integer from 1 to 5");
+    await ensure();
+    if (runId && (!agent || !model)) {
+      const match = (await readLedger(files.ledger)).findLast((entry) => entry.runId === runId);
+      agent ??= match?.agent;
+      model ??= match?.model ?? "default";
+    }
+    if (!agent) throw new Error("Rating requires an agent or a known runId");
+    const entry = { timestamp: now().toISOString(), runId: runId ?? null, agent, model: model ?? "default", rating, ...(note ? { note: String(note).slice(0, 500) } : {}) };
+    await appendFile(files.ratings, `${JSON.stringify(entry)}\n`, "utf8");
+    return entry;
+  }
+
+  async function ratings({ agent, model } = {}) {
+    const entries = await readLedger(files.ratings);
+    const selected = entries.filter((entry) => (!agent || entry.agent === agent) && (!model || entry.model === model));
+    return { entries: selected, summary: await ratingSummary({}) };
+  }
+
+  async function ratingSummary({ candidates } = {}) {
+    const [ledger, manual] = await Promise.all([readLedger(files.ledger), readLedger(files.ratings)]);
+    const keys = new Set(candidates ?? []);
+    for (const entry of [...ledger, ...manual]) keys.add(`${entry.agent}/${entry.model ?? "default"}`);
+    const summary = {};
+    for (const key of keys) {
+      const [agent, ...modelParts] = key.split("/");
+      const model = modelParts.join("/") || "default";
+      const outcomes = ledger.filter((entry) => entry.agent === agent && (entry.model ?? "default") === model && entry.outcome);
+      const notes = manual.filter((entry) => entry.agent === agent && (entry.model ?? "default") === model);
+      const completed = outcomes.filter((entry) => entry.outcome === "completed");
+      const decided = outcomes.filter((entry) => ["completed", "failed"].includes(entry.outcome));
+      const averageRating = average(notes.map((entry) => entry.rating));
+      const successRate = decided.length ? completed.length / decided.length : null;
+      const averageLatencyMs = average(completed.map((entry) => entry.latencyMs).filter(Number.isFinite));
+      const averageCost = average(completed.map((entry) => entry.cost?.amount).filter(Number.isFinite));
+      const score = Math.round((averageRating === null ? 60 : averageRating * 20) * 0.6 + (successRate === null ? 70 : successRate * 100) * 0.4);
+      summary[key] = { score, averageRating, ratings: notes.length, successRate, runs: decided.length, averageLatencyMs, averageCost, confidence: notes.length + decided.length >= 5 ? "high" : notes.length + decided.length ? "low" : "none" };
+    }
+    return summary;
   }
 
   async function check({ profile = "standard", estimatedCost, currency = "USD" } = {}) {
@@ -273,7 +322,11 @@ export function createUsageManager({
     return { provider: "openrouter", credits: providers.openrouter.credits, modelCount: models.length, syncedAt: providers.openrouter.syncedAt };
   }
 
-  return { ensure, record, status, report, recommend, check, syncOpenRouter, compactIfNeeded, files };
+  return { ensure, record, status, report, recommend, rate, ratings, check, syncOpenRouter, compactIfNeeded, files };
+}
+
+function average(values) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 }
 
 async function writeLedgerAtomic(file, entries) {

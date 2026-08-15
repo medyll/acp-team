@@ -6,14 +6,14 @@ function mapOpenCodeMode(mode) {
   return mode === "plan" ? "plan" : "build";
 }
 
-export function createOpenCodeAdapter({ permissionPolicy, log, client, ...options } = {}) {
+export function createOpenCodeAdapter({ permissionPolicy, log, client, clientOptions, ...options } = {}) {
   return createAcpAdapter({
     id: "opencode",
     description: "OpenCode CLI over ACP. Provider-agnostic coding agent with native tools and session continuity.",
     permissionPolicy,
     log,
     mapMode: mapOpenCodeMode,
-    client: client ?? new OpenCodeAcpClient({ permissionPolicy, onLog: log }),
+    client: client ?? new OpenCodeAcpClient({ permissionPolicy, onLog: log, ...clientOptions }),
     ...options
   });
 }

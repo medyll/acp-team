@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MODES } from "../agents/agent.js";
-import { WRITE_CONFIRMATION, authorizeMode } from "../security-policy.js";
+import { authorizeMode, requiresWriteAuthorization } from "../security-policy.js";
 import { jsonResult, progressReporter, render, textResult } from "./shared.js";
 
 /** Delegation options every agent tool accepts, kept in one place so the
@@ -13,7 +13,7 @@ function delegationShape(AgentId) {
     new_session: z.boolean().optional().describe("Force a fresh session instead of reusing the one for this cwd."),
     model: z.string().optional().describe("Model override supported by the selected agent."),
     mode: z.enum(MODES).optional().describe("Permission/sandbox mode: plan is read-only; default and auto allow workspace writes."),
-    confirm_write: z.literal(WRITE_CONFIRMATION).optional().describe("Required acknowledgement for default or auto write-capable modes."),
+    authorization: z.string().optional().describe("Scoped token issued by `acp-team authorize grant`; required for write-capable modes."),
     thinking: z.enum(["low", "high", "max", "on"]).optional().describe("Reasoning effort (kimi only)."),
     options: z
       .record(z.union([z.string(), z.number(), z.boolean()]))
@@ -25,7 +25,7 @@ function delegationShape(AgentId) {
   };
 }
 
-export function registerAgentTools(server, { registry, runManager, usageManager, defaultCwd, log }) {
+export function registerAgentTools(server, { registry, runManager, usageManager, authorizationManager, journal, defaultCwd, log }) {
   const AgentId = z.enum(registry.ids);
   const shape = delegationShape(AgentId);
 
@@ -41,7 +41,9 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
       }
     },
     async (input, extra) => {
-      const mode = authorizeMode(input.mode, { confirmWrite: input.confirm_write });
+      const startedAt = Date.now();
+      const mode = authorizeMode(input.mode);
+      if (requiresWriteAuthorization(mode)) await authorizationManager.consume({ token: input.authorization, agent: input.agent, cwd: input.cwd || defaultCwd, mode });
       const result = await registry.get(input.agent).ask({
         prompt: input.prompt,
         cwd: input.cwd || defaultCwd,
@@ -54,7 +56,7 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
         signal: extra?.signal,
         onEvent: progressReporter(extra, log)
       });
-      await usageManager.record({ agent: input.agent, model: input.model, sessionId: result.sessionId, usage: result.usage, cost: result.cost });
+      await usageManager.record({ agent: input.agent, model: input.model, sessionId: result.sessionId, usage: result.usage, cost: result.cost, outcome: "completed", latencyMs: Date.now() - startedAt });
       return textResult(render({ agent: input.agent, result, includeThoughts: input.include_thoughts }));
     }
   );
@@ -68,7 +70,8 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
       inputSchema: shape
     },
     async (input) => {
-      const mode = authorizeMode(input.mode, { confirmWrite: input.confirm_write });
+      const mode = authorizeMode(input.mode);
+      if (requiresWriteAuthorization(mode)) await authorizationManager.consume({ token: input.authorization, agent: input.agent, cwd: input.cwd || defaultCwd, mode });
       return jsonResult(
         runManager.start({
           agent: input.agent,
@@ -96,19 +99,21 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
         agents: z.array(AgentId).min(2).max(6).describe("Agents to ask. Each one gets its own independent run."),
         cwd: shape.cwd,
         mode: shape.mode,
-        confirm_write: shape.confirm_write,
+        authorization: shape.authorization,
         models: z
           .record(z.string())
           .optional()
           .describe("Per-agent model override, keyed by agent id. Agents without an entry use their default.")
       }
     },
-    async ({ prompt, agents, cwd, mode, confirm_write, models }) => {
-      const authorizedMode = authorizeMode(mode, { confirmWrite: confirm_write });
+    async ({ prompt, agents, cwd, mode, authorization, models }) => {
+      const authorizedMode = authorizeMode(mode);
       const unique = [...new Set(agents)];
-      const runs = unique.map((agent) => {
+      const runs = [];
+      for (const agent of unique) {
         try {
-          return {
+          if (requiresWriteAuthorization(authorizedMode)) await authorizationManager.consume({ token: authorization, agent, cwd: cwd || defaultCwd, mode: authorizedMode });
+          runs.push({
             agent,
             ...runManager.start({
               agent,
@@ -118,13 +123,56 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
               model: models?.[agent],
               mode: authorizedMode
             })
-          };
+          });
         } catch (error) {
           // One unavailable agent must not sink the whole comparison.
-          return { agent, status: "rejected", error: { message: error.message } };
+          runs.push({ agent, status: "rejected", error: { message: error.message } });
         }
-      });
+      }
       return jsonResult({ prompt, mode: authorizedMode, runs });
+    }
+  );
+
+  server.registerTool(
+    "run_history",
+    {
+      title: "Read persisted run history",
+      description: "Read lifecycle-only run history across bridge restarts. Prompts, answers and reasoning are never journalled.",
+      inputSchema: { agent: AgentId.optional(), limit: z.number().int().min(1).max(1000).optional() }
+    },
+    async ({ agent, limit }) => {
+      const entries = await journal.history({ limit: Math.min(5000, (limit ?? 100) * 10) });
+      return jsonResult(entries.filter((entry) => !agent || entry.agent === agent).slice(-(limit ?? 100)));
+    }
+  );
+
+  server.registerTool(
+    "run_show",
+    {
+      title: "Show a run",
+      description: "Show live details for a retained run, or its persisted lifecycle after a restart.",
+      inputSchema: { run_id: z.string() }
+    },
+    async ({ run_id }) => {
+      try { return jsonResult(runManager.show(run_id)); } catch {
+        const entries = await journal.history({ runId: run_id, limit: 1000 });
+        if (!entries.length) throw new Error(`Unknown run "${run_id}".`);
+        return jsonResult({ runId: run_id, persisted: true, events: entries });
+      }
+    }
+  );
+
+  server.registerTool(
+    "run_retry",
+    {
+      title: "Retry a retained run",
+      description: "Retry a finished run still retained in memory. Restarted bridges cannot recover prompts because prompts are deliberately not journalled.",
+      inputSchema: { run_id: z.string(), authorization: z.string().optional() }
+    },
+    async ({ run_id, authorization }) => {
+      const scope = runManager.retryScope(run_id);
+      if (requiresWriteAuthorization(scope.mode)) await authorizationManager.consume({ token: authorization, ...scope });
+      return jsonResult(runManager.retry(run_id));
     }
   );
 

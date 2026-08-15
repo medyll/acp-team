@@ -171,8 +171,10 @@ export function createRunManager({
             sessionId: run.sessionId,
             runId: run.runId,
             usage: result.usage,
-            cost: result.cost
-          });
+            cost: result.cost,
+            outcome: "completed",
+            latencyMs: Date.parse(run.finishedAt) - Date.parse(run.startedAt)
+          }).catch(() => {});
           append(run, "run.completed", { sessionId: run.sessionId });
         }
       } catch (error) {
@@ -184,6 +186,15 @@ export function createRunManager({
           run.status = "failed";
           run.error = { name: error?.name ?? "Error", message: error?.message ?? String(error) };
           run.finishedAt = new Date().toISOString();
+          await usageManager?.record({
+            agent: run.agent,
+            model: askOptions.model,
+            sessionId: run.sessionId,
+            runId: run.runId,
+            outcome: "failed",
+            latencyMs: Date.parse(run.finishedAt) - Date.parse(run.startedAt),
+            source: "bridge-observed"
+          }).catch(() => {});
           append(run, "run.failed", { error: run.error });
         }
       } finally {
@@ -237,6 +248,27 @@ export function createRunManager({
       .map((run) => publicRun(run, { includeEvents: false }));
   }
 
+  function show(runId) {
+    return publicRun(get(runId));
+  }
+
+  function retryScope(runId) {
+    const run = get(runId);
+    if (!TERMINAL_STATES.has(run.status)) throw new Error("Only a finished run can be retried");
+    return { agent: run.agent, cwd: run.askOptions.cwd, mode: run.askOptions.mode ?? "plan" };
+  }
+
+  function retry(runId) {
+    const run = get(runId);
+    retryScope(runId);
+    return start({
+      agent: run.agent,
+      ...run.askOptions,
+      sessionId: undefined,
+      newSession: true
+    });
+  }
+
   function stopAll() {
     for (const run of runs.values()) {
       if (!TERMINAL_STATES.has(run.status)) stop(run.runId);
@@ -253,5 +285,5 @@ export function createRunManager({
     }));
   }
 
-  return { start, watch, stop, list, stopAll, capacity };
+  return { start, watch, stop, list, show, retry, retryScope, stopAll, capacity };
 }

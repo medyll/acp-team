@@ -79,12 +79,42 @@ acp-team prompt "Review this project" --to codex --mode plan
 acp-team chat --with kimi
 acp-team prompt "Review this function" --to ollama --model qwen3-coder
 acp-team configure "Optimize local model usage" --controller ollama --with qwen3-coder
+acp-team doctor
 acp-team agent status
 acp-team usage report --period month
 ```
 
 `prompt` and `chat` default to the read-only `plan` mode. Passing `default` or
 `auto` is an explicit choice to allow workspace writes.
+
+Write access uses a short-lived token scoped to one agent, directory and mode:
+
+```sh
+acp-team authorize grant --agent codex --cwd . --mode default --for 15m --uses 1
+acp-team prompt "Implement the approved change" --to codex --mode default --authorization auth_...
+acp-team authorize list
+acp-team authorize revoke <authorization-id>
+```
+
+Only the token hash is stored. Tokens expire, have a bounded use count and
+cannot be reused for another agent, directory or mode.
+
+Operational commands cover diagnostics, adapters, history and compatibility:
+
+```sh
+acp-team doctor --agent codex
+acp-team doctor --fix
+acp-team agent add vendor --command vendor-cli --args '["acp"]' --enable
+acp-team agent probe vendor
+acp-team run history --limit 50
+acp-team run show <run-id>
+acp-team compat test codex
+acp-team compat test codex --live
+acp-team model rate --run <run-id> --rating 5 --note "excellent"
+acp-team model ratings
+```
+
+Live compatibility probes are opt-in and always use `plan` mode.
 
 ### AI-assisted configuration
 
@@ -131,6 +161,9 @@ acp-team cli install "vendor CLI" --dry-run
 acp-team cli install "vendor CLI" --execute
 ```
 
+An executable plan must name the publisher and package, pin a stable version,
+and cite HTTPS provenance evidence including the vendor's official domain.
+
 Installation requires an HTTPS official source and a structured package-manager
 command. Shell composition, download-and-execute pipelines and secret storage are
 refused. Interactive execution always asks for confirmation; non-interactive
@@ -176,7 +209,7 @@ edit.
 Hand off a self-contained task and let the agent do the work:
 
 ```json
-{ "agent": "codex", "prompt": "Add a --dry-run flag to the migrate command, with a test.", "mode": "default", "confirm_write": "ALLOW_AGENT_WRITE" }
+{ "agent": "codex", "prompt": "Add a --dry-run flag to the migrate command, with a test.", "mode": "default", "authorization": "auth_..." }
 ```
 
 Put a long-context model on a large question:
@@ -223,9 +256,14 @@ Continue an earlier conversation explicitly:
 | `agent_list` | Which agents exist, what each is good for, which modes they accept |
 | `agent_status` | Transport, version, models, defaults, open sessions and supervised runs |
 | `agent_cancel` | Legacy cancellation by agent session id |
+| `run_history` | Read lifecycle-only history across bridge restarts |
+| `run_show` | Show a live retained run or persisted lifecycle |
+| `run_retry` | Retry a finished run still retained in memory |
 | `usage_status` | Observed tokens, reported cost, configured budget, reset period and active promotion |
 | `usage_report` | Usage ledger aggregated by agent and model |
-| `model_recommend` | Configured cheap, standard or premium model candidates for a task |
+| `model_recommend` | Candidates ranked by configuration, rating, reliability, latency and observed cost |
+| `model_rate` | Attach a human 1-5 rating to a run or agent/model pair |
+| `model_ratings` | Show human ratings and observed quality signals |
 | `budget_check` | Check an estimated task cost before delegating it |
 | `usage_compact` | Archive ledger entries past the retention window into monthly rollups |
 | `usage_sync` | Refresh OpenRouter credits and model-price catalog, without storing its key |
@@ -238,6 +276,7 @@ Continue an earlier conversation explicitly:
 | `config_stage` | Validate and save a proposal without applying it |
 | `config_apply` | Apply an explicitly approved proposal and create a rollback snapshot |
 | `config_rollback` | Restore an explicitly approved snapshot |
+| `system_doctor` | Diagnose configuration, storage access and agent availability |
 
 For interactive delegation, prefer this control loop:
 
@@ -250,8 +289,9 @@ commands and file changes. Private reasoning payloads are deliberately not expos
 
 ### Concurrency
 
-Each agent runs at most `AGENT_BRIDGE_MAX_CONCURRENT` turns at a time (2 by
-default). Past that, a run stays `queued`, emits a `run.waiting` event and is
+Each agent uses `runtime.maxConcurrentPerAgent` from `settings.json` (2 by
+default); `AGENT_BRIDGE_MAX_CONCURRENT` remains the higher-priority deployment
+override. Past that, a run stays `queued`, emits a `run.waiting` event and is
 admitted as soon as a slot frees — a delegation is a CLI subprocess, and an
 unbounded number of them competes for the same machine and the same vendor rate
 limit. Limits are per agent, so a busy Codex never blocks Kimi. `agent_status`
@@ -264,16 +304,16 @@ Live run state is in memory on purpose: a restarted bridge owns no agent
 sessions and could not resume anything. Run *lifecycle* is journalled to
 `runs.jsonl` under the data directory — queued, admitted, completed, failed,
 cancelled — so the history of what was delegated remains after a crash. Agent
-answers and reasoning are not journalled.
+answers and reasoning are not journalled. On startup, unfinished lifecycle
+entries are closed as `interrupted`; they are never falsely presented as resumed.
 
 ### What the confirmations do and do not do
 
-Write-capable modes require `confirm_write`. This is a deliberate speed bump,
-not an authorization boundary: any caller
-able to invoke the tool can also send the literal string. What they buy is that
-nothing reaches a write-capable mode by defaulting into it or by a model
-guessing a flag. The real boundary is the sandbox each adapter requests from its
-CLI, plus whatever approval the host requires before the tool runs at all.
+Write-capable modes require a token issued outside the MCP tool surface by
+`acp-team authorize grant`. The persisted store contains only a hash and the
+scope metadata. This prevents a delegated model from manufacturing permission
+by guessing a public confirmation literal. The agent sandbox remains the final
+execution boundary.
 
 ## Modes
 
@@ -286,13 +326,24 @@ CLI, plus whatever approval the host requires before the tool runs at all.
 | `auto` | ACP mode `auto` | same as `default` |
 When an MCP request omits `mode`, ACP Team now uses `plan` rather than an
 agent-specific write-capable default. `default` and `auto` require
-`confirm_write: "ALLOW_AGENT_WRITE"`. Unsandboxed execution is not exposed;
+an `authorization` token scoped to the requested agent and directory. Unsandboxed execution is not exposed;
 keep `plan` for work that has not explicitly been authorized.
 
 ## Models and settings
 
 Set `model`, `mode` and `thinking` per call. A model set this way sticks to the
 session, so later turns keep it.
+
+`settings.json` schema v2 is also the runtime source of truth for enabled
+agents, defaults, concurrency and resilience. Existing schema v1 files are
+expanded in memory without data loss; `acp-team doctor --fix` persists the
+migration. Precedence is CLI options, then environment variables, then the JSON
+configuration, then built-in defaults.
+
+Custom agents live under `runtime.customAgents` and support the safe ACP
+transport only. Their command is executed directly with `shell: false`; shell
+composition and unsupported modes are rejected during registry creation. New
+custom agents stay disabled until explicitly enabled.
 
 ```json
 { "agent": "kimi",  "prompt": "…", "model": "kimi-code/k3", "thinking": "high" }
@@ -382,7 +433,10 @@ The first `usage_status` call creates editable JSON files in the data directory:
 `budgets.json` (period and per-run limits), `models.json` (the short list for
 `cheap`, `standard` and `premium` work), `providers.json` (billing metadata)
 and `promotions.json` (temporary offers with an expiry). Completed agent calls
-append observed metrics to `usage-ledger.jsonl`.
+append observed metrics to `usage-ledger.jsonl`. Human ratings are stored in
+`model-ratings.jsonl`; the recommendation order combines them with observed
+success, latency and cost. Missing evidence stays explicit and receives low
+confidence rather than a fabricated score.
 
 `usage_sync` saves the OpenRouter balance in `providers.json` and a normalized
 catalogue with price, context and capability data in `model-catalog.json`. It
@@ -397,7 +451,7 @@ ACP Team keeps reported costs distinct from calculated prices and estimates.
 
 ```
 src/
-  mcp-server.js          MCP surface: the seven agent_* tools
+  mcp-server.js          MCP server composition and runtime wiring
   mcp-smoke-test.js      Full chain, every agent
   agents/
     agent.js             Shared adapter contract and mode vocabulary

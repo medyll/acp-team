@@ -8,13 +8,12 @@
  * boundary is the sandbox each adapter asks its CLI for, plus whatever the host
  * requires before invoking the tool at all.
  */
-export const WRITE_CONFIRMATION = "ALLOW_AGENT_WRITE";
-
-export function authorizeMode(mode, { confirmWrite } = {}) {
+export function authorizeMode(mode) {
   const effectiveMode = mode ?? "plan";
   if (!["plan", "default", "auto"].includes(effectiveMode)) throw new Error(`Unsupported agent mode "${effectiveMode}"`);
-  if (["default", "auto"].includes(effectiveMode) && confirmWrite !== WRITE_CONFIRMATION) {
-    throw new Error(`Mode ${effectiveMode} requires confirm_write="${WRITE_CONFIRMATION}"`);
-  }
   return effectiveMode;
+}
+
+export function requiresWriteAuthorization(mode) {
+  return ["default", "auto"].includes(mode);
 }

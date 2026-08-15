@@ -150,3 +150,22 @@ test("journals run lifecycle transitions without exposing agent output", async (
   assert.ok(recorded.every((entry) => entry.runId === run.runId));
   assert.equal(JSON.stringify(recorded).includes("secret answer"), false);
 });
+
+test("retries a retained finished run as a fresh session", async () => {
+  const calls = [];
+  const adapter = {
+    async ask(options) {
+      calls.push(options);
+      return { sessionId: `s-${calls.length}`, text: "done", thoughts: "", toolCalls: [] };
+    }
+  };
+  const manager = createRunManager({ registry: registryFor(adapter) });
+  const first = manager.start({ agent: "fake", prompt: "work", cwd: "C:/work", mode: "plan" });
+  await delay(0);
+  const retried = manager.retry(first.runId);
+  await delay(0);
+  assert.notEqual(retried.runId, first.runId);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].newSession, true);
+  assert.equal(calls[1].prompt, "work");
+});

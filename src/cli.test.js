@@ -10,3 +10,12 @@ test("parses --with and its French alias", () => {
     positionals: ["configure"], options: { avec: "sonnet" }
   });
 });
+
+test("parses operational boolean flags without consuming the next argument", () => {
+  assert.deepEqual(parseArguments(["compat", "test", "codex", "--live"]), {
+    positionals: ["compat", "test", "codex"], options: { live: true }
+  });
+  assert.deepEqual(parseArguments(["doctor", "--fix", "--yes"]), {
+    positionals: ["doctor"], options: { fix: true, yes: true }
+  });
+});
