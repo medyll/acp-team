@@ -38,6 +38,20 @@ test("keeps only the most recent proposals and rollback snapshots", async () => 
   assert.equal(await manager.get("budgets.periods.monthly"), 5, "pruning never touches the live configuration");
 });
 
+test("refuses configuration sections and keys that live on the prototype chain", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-config-"));
+  const manager = createConfigManager({ dataDir });
+  await manager.ensure();
+
+  for (const key of ["__proto__.pwned", "constructor.pwned", "settings.__proto__.pwned"]) {
+    await assert.rejects(manager.set(key, true), /Unsafe configuration property path|Unknown configuration section/, `set("${key}") must be refused by name`);
+  }
+  await assert.rejects(manager.get("__proto__.pwned"), /Unsafe configuration property path/);
+  assert.throws(() => validateProposal({ changes: [{ file: "__proto__", path: "pwned", value: true }] }), /Unknown configuration section/);
+  assert.throws(() => validateProposal({ changes: [{ file: "constructor", path: "pwned", value: true }] }), /Unknown configuration section/);
+  assert.equal({}.pwned, undefined);
+});
+
 test("rejects secret and unsafe proposal paths", () => {
   assert.throws(() => validateProposal({ changes: [{ file: "settings", path: "provider.apiKey", value: "secret" }] }), /Secrets cannot/);
   assert.throws(() => validateProposal({ changes: [{ file: "settings", path: "__proto__.polluted", value: true }] }), /Unsafe/);

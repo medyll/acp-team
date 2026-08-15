@@ -78,10 +78,19 @@ function splitList(value) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
+/**
+ * Settings arrive from a file on disk, and `result[key] = …` for a key like
+ * `__proto__` reassigns the prototype instead of setting a property. The write
+ * path already refuses these names; the read path has to refuse them too, or a
+ * hand-edited settings.json walks straight past that guard.
+ */
+const UNSAFE_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
 function merge(base, value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return structuredClone(base);
   const result = structuredClone(base);
   for (const [key, next] of Object.entries(value)) {
+    if (UNSAFE_KEYS.has(key)) continue;
     if (next && typeof next === "object" && !Array.isArray(next) && result[key] && typeof result[key] === "object" && !Array.isArray(result[key])) {
       result[key] = merge(result[key], next);
     } else {

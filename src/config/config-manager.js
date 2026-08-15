@@ -46,7 +46,7 @@ export function createConfigManager({
   }
 
   async function set(key, value) {
-    const [file, ...segments] = splitKey(normalizeConfigKey(key));
+    const [file, ...segments] = splitPropertyPath(normalizeConfigKey(key));
     assertManagedFile(file);
     if (!segments.length) throw new Error("A configuration key must include a property path");
     assertNonSecretPath(segments.join("."), file);
@@ -180,7 +180,7 @@ function splitKey(key) {
 
 function normalizeConfigKey(key) {
   const segments = splitKey(key);
-  return MANAGED_FILES[segments[0]] ? segments.join(".") : `settings.${segments.join(".")}`;
+  return Object.hasOwn(MANAGED_FILES, segments[0]) ? segments.join(".") : `settings.${segments.join(".")}`;
 }
 
 function splitPropertyPath(value) {
@@ -192,11 +192,19 @@ function splitPropertyPath(value) {
 }
 
 function assertManagedFile(file) {
-  if (!MANAGED_FILES[file]) throw new Error(`Unknown configuration section "${file}". Available: ${Object.keys(MANAGED_FILES).join(", ")}`);
+  // Own-property only: a plain `MANAGED_FILES[file]` lookup answers truthily for
+  // "__proto__", "constructor" and every other inherited key, which let a
+  // section name off the prototype chain through this guard and fail later as a
+  // confusing path.join type error.
+  if (!Object.hasOwn(MANAGED_FILES, file)) {
+    throw new Error(`Unknown configuration section "${file}". Available: ${Object.keys(MANAGED_FILES).join(", ")}`);
+  }
 }
 
 function getPath(root, key) {
-  return splitKey(key).reduce((value, segment) => value?.[segment], root);
+  // splitPropertyPath, not splitKey: reading `__proto__.x` would walk the
+  // prototype chain and report an inherited value as configuration.
+  return splitPropertyPath(key).reduce((value, segment) => (Object.hasOwn(Object(value), segment) ? value[segment] : undefined), root);
 }
 
 function setPath(root, segments, value) {
