@@ -111,19 +111,19 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
       const unique = [...new Set(agents)];
       const workingDirectory = cwd || defaultCwd;
 
-      // Authorize every agent before starting any of them. A token scoped to one
+      // Authorize the fan-out as one transaction. A token scoped to a single
       // agent, or with fewer uses than there are agents, would otherwise let the
       // first run write while the rest were refused — a partial fan-out nobody
-      // approved. Failing here starts nothing at all.
+      // approved — and spend uses on the way to failing.
       if (requiresWriteAuthorization(authorizedMode)) {
-        for (const agent of unique) {
-          try {
-            await authorizationManager.consume({ token: authorization, agent, cwd: workingDirectory, mode: authorizedMode });
-          } catch (error) {
-            throw new Error(
-              `Authorization does not cover this fan-out (${agent}): ${error.message}. Grant a token scoped to every agent, with at least ${unique.length} uses.`
-            );
-          }
+        try {
+          await authorizationManager.consumeMany(
+            unique.map((agent) => ({ token: authorization, agent, cwd: workingDirectory, mode: authorizedMode }))
+          );
+        } catch (error) {
+          throw new Error(
+            `Authorization does not cover this fan-out: ${error.message}. Grant a token scoped to every agent, with at least ${unique.length} uses.`
+          );
         }
       }
 

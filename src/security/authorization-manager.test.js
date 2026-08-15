@@ -22,6 +22,85 @@ test("rejects a token outside its agent or directory scope", async () => {
   await assert.rejects(() => manager.consume({ token: issued.token, agent: "codex", cwd: path.dirname(dataDir), mode: "auto" }), /scoped to/);
 });
 
+/** Remaining uses on the single entry in the store. */
+async function usesLeft(manager) {
+  const [entry] = await manager.list();
+  return entry.usesRemaining;
+}
+
+test("a wildcard batch spends exactly one use per agent", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "acp-auth-"));
+  const manager = createAuthorizationManager({ dataDir });
+  const issued = await manager.issue({ agent: "*", cwd: dataDir, mode: "default", ttlMs: 60_000, uses: 3 });
+  const consumed = await manager.consumeMany(
+    ["kimi", "codex"].map((agent) => ({ token: issued.token, agent, cwd: dataDir, mode: "default" }))
+  );
+  assert.equal(consumed.length, 2);
+  assert.equal(await usesLeft(manager), 1);
+});
+
+test("a batch outside the token's scope spends nothing", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "acp-auth-"));
+  const manager = createAuthorizationManager({ dataDir });
+  // Scoped to kimi with uses to spare: the first request would have passed, so
+  // consuming request by request would have burned one before refusing codex.
+  const issued = await manager.issue({ agent: "kimi", cwd: dataDir, mode: "default", ttlMs: 60_000, uses: 5 });
+  await assert.rejects(
+    () => manager.consumeMany(["kimi", "codex"].map((agent) => ({ token: issued.token, agent, cwd: dataDir, mode: "default" }))),
+    /scoped to agent kimi/
+  );
+  assert.equal(await usesLeft(manager), 5, "a refused batch must leave the counter untouched");
+});
+
+test("a batch larger than the remaining uses spends nothing", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "acp-auth-"));
+  const manager = createAuthorizationManager({ dataDir });
+  const issued = await manager.issue({ agent: "*", cwd: dataDir, mode: "default", ttlMs: 60_000, uses: 2 });
+  await assert.rejects(
+    () => manager.consumeMany(["kimi", "codex", "opencode"].map((agent) => ({ token: issued.token, agent, cwd: dataDir, mode: "default" }))),
+    /2 use\(s\) remaining but this batch needs 3/
+  );
+  assert.equal(await usesLeft(manager), 2);
+});
+
+test("an expired token or a foreign directory spends nothing in a batch", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "acp-auth-"));
+  const clock = { value: new Date("2026-01-01T00:00:00Z") };
+  const manager = createAuthorizationManager({ dataDir, now: () => clock.value });
+  const issued = await manager.issue({ agent: "*", cwd: dataDir, mode: "default", ttlMs: 60_000, uses: 4 });
+
+  const foreign = [
+    { token: issued.token, agent: "kimi", cwd: dataDir, mode: "default" },
+    { token: issued.token, agent: "codex", cwd: path.dirname(dataDir), mode: "default" }
+  ];
+  await assert.rejects(() => manager.consumeMany(foreign), /scoped to/);
+  assert.equal(await usesLeft(manager), 4);
+
+  clock.value = new Date("2026-01-01T00:02:00Z");
+  await assert.rejects(
+    () => manager.consumeMany([{ token: issued.token, agent: "kimi", cwd: dataDir, mode: "default" }]),
+    /has expired/
+  );
+  assert.equal(await usesLeft(manager), 4);
+});
+
+test("a read-only batch needs no token at all", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "acp-auth-"));
+  const manager = createAuthorizationManager({ dataDir });
+  assert.deepEqual(await manager.consumeMany([{ agent: "kimi", cwd: dataDir, mode: "plan" }]), { required: false });
+});
+
+test("concurrent batches cannot spend the same uses twice", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "acp-auth-"));
+  const manager = createAuthorizationManager({ dataDir });
+  const issued = await manager.issue({ agent: "*", cwd: dataDir, mode: "default", ttlMs: 60_000, uses: 3 });
+  const batch = () => manager.consumeMany(["kimi", "codex"].map((agent) => ({ token: issued.token, agent, cwd: dataDir, mode: "default" })));
+
+  const results = await Promise.allSettled([batch(), batch()]);
+  assert.deepEqual(results.map((result) => result.status).sort(), ["fulfilled", "rejected"]);
+  assert.equal(await usesLeft(manager), 1, "only the batch that won the lock may spend");
+});
+
 test("serializes concurrent consumption of a one-use token", async () => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "acp-auth-"));
   const manager = createAuthorizationManager({ dataDir });

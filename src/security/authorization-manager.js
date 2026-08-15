@@ -41,19 +41,60 @@ export function createAuthorizationManager({ dataDir, now = () => new Date() } =
   }
 
   async function consumeUnlocked({ token, agent, cwd, mode }) {
-    if (!["default", "auto"].includes(mode)) return { required: false };
-    if (!token) throw new Error("Write-capable mode requires a scoped authorization token");
+    if (!requiresToken(mode)) return { required: false };
     const entries = await load();
-    const entry = entries.find((candidate) => candidate.tokenHash === hash(token));
-    if (!entry || entry.revokedAt) throw new Error("Authorization token is invalid or revoked");
-    if (new Date(entry.expiresAt) <= now()) throw new Error("Authorization token has expired");
+    const entry = findUsable(entries, { token, agent, cwd, mode });
     if (entry.usesRemaining < 1) throw new Error("Authorization token has no remaining uses");
-    if (entry.agent !== "*" && entry.agent !== agent) throw new Error(`Authorization is scoped to agent ${entry.agent}`);
-    if (path.resolve(cwd) !== entry.cwd) throw new Error(`Authorization is scoped to ${entry.cwd}`);
-    if (entry.mode !== mode) throw new Error(`Authorization is scoped to mode ${entry.mode}`);
     entry.usesRemaining -= 1;
     await save(entries);
     return publicEntry(entry);
+  }
+
+  /**
+   * Authorize a batch as one transaction.
+   *
+   * Consuming request by request means a batch that fails halfway has already
+   * spent uses on the requests that passed — the caller starts nothing, but the
+   * token is quietly poorer. Everything here is validated against an unmodified
+   * store first, and the counters only move once every request holds.
+   */
+  function consumeMany(requests) {
+    return exclusive(() => consumeManyUnlocked(requests));
+  }
+
+  async function consumeManyUnlocked(requests) {
+    if (!Array.isArray(requests) || !requests.length) throw new Error("Authorization batch requires at least one request");
+    const writes = requests.filter((request) => requiresToken(request.mode));
+    if (!writes.length) return { required: false };
+
+    const entries = await load();
+    const matched = writes.map((request) => findUsable(entries, request));
+
+    // Several requests can legitimately draw on one wildcard token, so the use
+    // count is checked per entry against the whole batch, not per request.
+    const demand = new Map();
+    for (const entry of matched) demand.set(entry, (demand.get(entry) ?? 0) + 1);
+    for (const [entry, needed] of demand) {
+      if (entry.usesRemaining < needed) {
+        throw new Error(`Authorization has ${entry.usesRemaining} use(s) remaining but this batch needs ${needed}`);
+      }
+    }
+
+    for (const [entry, needed] of demand) entry.usesRemaining -= needed;
+    await save(entries);
+    return matched.map(publicEntry);
+  }
+
+  /** Locate the entry a request may use, or explain why it may not. Never mutates. */
+  function findUsable(entries, { token, agent, cwd, mode }) {
+    if (!token) throw new Error("Write-capable mode requires a scoped authorization token");
+    const entry = entries.find((candidate) => candidate.tokenHash === hash(token));
+    if (!entry || entry.revokedAt) throw new Error("Authorization token is invalid or revoked");
+    if (new Date(entry.expiresAt) <= now()) throw new Error("Authorization token has expired");
+    if (entry.agent !== "*" && entry.agent !== agent) throw new Error(`Authorization is scoped to agent ${entry.agent}`);
+    if (path.resolve(cwd) !== entry.cwd) throw new Error(`Authorization is scoped to ${entry.cwd}`);
+    if (entry.mode !== mode) throw new Error(`Authorization is scoped to mode ${entry.mode}`);
+    return entry;
   }
 
   function revoke(id) {
@@ -94,7 +135,11 @@ export function createAuthorizationManager({ dataDir, now = () => new Date() } =
     await rename(temporary, file);
   }
 
-  return { issue, consume, revoke, list, file };
+  return { issue, consume, consumeMany, revoke, list, file };
+}
+
+function requiresToken(mode) {
+  return ["default", "auto"].includes(mode);
 }
 
 function hash(token) {

@@ -22,8 +22,15 @@ function harness({ consume, start } = {}) {
     authorizationManager: {
       async consume(request) {
         consumed.push(request);
-        if (consume) return consume(request, consumed.length);
+        if (consume) return consume([request]);
         return { id: "auth-1" };
+      },
+      async consumeMany(requests) {
+        // The real manager validates the whole batch before spending anything,
+        // so a rejecting stub must record nothing.
+        if (consume) return consume(requests);
+        consumed.push(...requests);
+        return requests.map(() => ({ id: "auth-1" }));
       }
     },
     defaultCwd: "/work",
@@ -40,7 +47,7 @@ test("a fan-out in plan mode needs no authorization at all", async () => {
   assert.deepEqual(JSON.parse(response.content[0].text).runs.map((run) => run.agent), ["kimi", "codex"]);
 });
 
-test("a write-capable fan-out consumes one use per agent", async () => {
+test("a write-capable fan-out authorizes every agent in one batch", async () => {
   const { call, consumed, started } = harness();
   await call("agent_fanout", { prompt: "fix", agents: ["kimi", "codex"], mode: "default", authorization: "auth_x" });
   assert.deepEqual(consumed.map((request) => request.agent), ["kimi", "codex"]);
@@ -48,20 +55,30 @@ test("a write-capable fan-out consumes one use per agent", async () => {
   assert.equal(started.length, 2);
 });
 
-test("a token that does not cover every agent starts no run at all", async () => {
-  // A token scoped to one agent, or with one use, previously let the first agent
-  // write while the rest were refused — a partial fan-out nobody approved.
-  const { call, started } = harness({
-    consume: (_request, attempt) => {
-      if (attempt > 1) throw new Error("Authorization is scoped to agent kimi");
-      return { id: "auth-1" };
+test("a token that does not cover every agent starts no run and spends nothing", async () => {
+  const { call, started, consumed } = harness({
+    consume: () => {
+      throw new Error("Authorization is scoped to agent kimi");
     }
   });
   await assert.rejects(
     call("agent_fanout", { prompt: "fix", agents: ["kimi", "codex"], mode: "default", authorization: "auth_x" }),
-    /Authorization does not cover this fan-out \(codex\).*at least 2 uses/s
+    /Authorization does not cover this fan-out.*at least 2 uses/s
   );
   assert.equal(started.length, 0, "no agent may start once the fan-out is known to be under-authorized");
+  assert.equal(consumed.length, 0, "a refused batch spends no uses");
+});
+
+test("the fan-out asks for its agents as a single batch, not one call per agent", async () => {
+  const batches = [];
+  const { call } = harness({
+    consume: (requests) => {
+      batches.push(requests.map((request) => request.agent));
+      return requests.map(() => ({ id: "auth-1" }));
+    }
+  });
+  await call("agent_fanout", { prompt: "fix", agents: ["kimi", "codex", "kimi"], mode: "default", authorization: "auth_x" });
+  assert.deepEqual(batches, [["kimi", "codex"]], "duplicate agents collapse and the batch is atomic");
 });
 
 test("an agent that cannot start does not sink the rest of the comparison", async () => {

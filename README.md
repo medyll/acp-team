@@ -101,9 +101,10 @@ cannot be reused for another agent, directory or mode.
 
 `--agent '*'` grants across agents, which is what `agent_fanout` needs in a
 write-capable mode: every agent in the fan-out consumes one use, so give the
-token at least as many uses as there are agents. A token that does not cover the
-whole fan-out fails it before any run starts, rather than letting the first
-agent write while the rest are refused.
+token at least as many uses as there are agents. The fan-out is authorized as a
+single transaction: a token that does not cover all of it fails the call before
+any run starts and without spending a use, rather than letting the first agent
+write while the rest are refused.
 
 Operational commands cover diagnostics, adapters, history and compatibility:
 
