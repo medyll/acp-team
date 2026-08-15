@@ -1,12 +1,12 @@
 /**
- * Write-capable modes must be asked for by name.
+ * What a mode is allowed to be, and which modes need more than a request.
  *
- * These constants are a deliberate speed bump, not an authorization boundary:
- * anything that can call the tool can also send the literal string. What they
- * buy is that no agent reaches a write-capable mode by defaulting into it or by
- * a model guessing a flag — the caller has to state the intent. The real
- * boundary is the sandbox each adapter asks its CLI for, plus whatever the host
- * requires before invoking the tool at all.
+ * This module answers only the first half: an absent mode is read-only, and an
+ * unknown one is refused rather than passed to an adapter that might interpret
+ * it loosely. It deliberately grants nothing — `requiresWriteAuthorization`
+ * marks the modes that must additionally present a scoped, expiring token to
+ * the authorization manager, which is where the actual boundary lives. Beneath
+ * both sits the sandbox each adapter requests from its own CLI.
  */
 export function authorizeMode(mode) {
   const effectiveMode = mode ?? "plan";

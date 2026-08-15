@@ -93,7 +93,7 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
     {
       title: "Ask several agents the same question",
       description:
-        "Send one prompt to several agents as supervised runs and return their run ids. Use it to compare how different agents approach the same problem, then read each result with agent_watch. Each run is subject to its agent's concurrency limit.",
+        "Send one prompt to several agents as supervised runs and return their run ids. Use it to compare how different agents approach the same problem, then read each result with agent_watch. Each run is subject to its agent's concurrency limit. In a write-capable mode every agent consumes one use of the token, so the authorization must cover all of them.",
       inputSchema: {
         prompt: shape.prompt,
         agents: z.array(AgentId).min(2).max(6).describe("Agents to ask. Each one gets its own independent run."),
@@ -109,10 +109,27 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
     async ({ prompt, agents, cwd, mode, authorization, models }) => {
       const authorizedMode = authorizeMode(mode);
       const unique = [...new Set(agents)];
+      const workingDirectory = cwd || defaultCwd;
+
+      // Authorize every agent before starting any of them. A token scoped to one
+      // agent, or with fewer uses than there are agents, would otherwise let the
+      // first run write while the rest were refused — a partial fan-out nobody
+      // approved. Failing here starts nothing at all.
+      if (requiresWriteAuthorization(authorizedMode)) {
+        for (const agent of unique) {
+          try {
+            await authorizationManager.consume({ token: authorization, agent, cwd: workingDirectory, mode: authorizedMode });
+          } catch (error) {
+            throw new Error(
+              `Authorization does not cover this fan-out (${agent}): ${error.message}. Grant a token scoped to every agent, with at least ${unique.length} uses.`
+            );
+          }
+        }
+      }
+
       const runs = [];
       for (const agent of unique) {
         try {
-          if (requiresWriteAuthorization(authorizedMode)) await authorizationManager.consume({ token: authorization, agent, cwd: cwd || defaultCwd, mode: authorizedMode });
           runs.push({
             agent,
             ...runManager.start({

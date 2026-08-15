@@ -99,6 +99,12 @@ acp-team authorize revoke <authorization-id>
 Only the token hash is stored. Tokens expire, have a bounded use count and
 cannot be reused for another agent, directory or mode.
 
+`--agent '*'` grants across agents, which is what `agent_fanout` needs in a
+write-capable mode: every agent in the fan-out consumes one use, so give the
+token at least as many uses as there are agents. A token that does not cover the
+whole fan-out fails it before any run starts, rather than letting the first
+agent write while the rest are refused.
+
 Operational commands cover diagnostics, adapters, history and compatibility:
 
 ```sh
