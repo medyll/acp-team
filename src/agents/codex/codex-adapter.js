@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { MODES, toolSummary } from "../agent.js";
 import { createSessionQueue } from "../session-queue.js";
+import { appendLimited, deadlineSignal } from "../../resilience.js";
 
 const CODEX_BIN = process.env.CODEX_BIN || (process.platform === "win32" ? "codex.exe" : "codex");
 const SKIP_GIT_CHECK = process.env.CODEX_BRIDGE_SKIP_GIT_CHECK !== "false";
@@ -18,7 +19,7 @@ const SKIP_GIT_CHECK = process.env.CODEX_BRIDGE_SKIP_GIT_CHECK !== "false";
  *   default | auto  -> --sandbox workspace-write
  *   yolo            -> --dangerously-bypass-approvals-and-sandbox
  */
-export function createCodexAdapter({ defaultModel, defaultMode, log }) {
+export function createCodexAdapter({ defaultModel, defaultMode, log, timeoutMs = 10 * 60_000, maxOutputBytes = 4 * 1024 * 1024, spawnImpl = spawn, bin = CODEX_BIN }) {
   /** cwd -> thread_id */
   const sessions = new Map();
   const queue = createSessionQueue();
@@ -56,7 +57,7 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
       : ["exec", ...flags, prompt];
 
     return new Promise((resolve, reject) => {
-      const proc = spawn(CODEX_BIN, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+      const proc = spawnImpl(bin, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
       live.set(proc, { cwd, threadId });
       const abortTurn = () => proc.kill();
       signal?.addEventListener("abort", abortTurn, { once: true });
@@ -68,7 +69,12 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
       let stderr = "";
 
       proc.stderr.on("data", (d) => {
-        stderr += d.toString();
+        try {
+          stderr = appendLimited(stderr, d, maxOutputBytes, "Codex stderr");
+        } catch (error) {
+          errors.push(error.message);
+          proc.kill();
+        }
       });
 
       readline.createInterface({ input: proc.stdout }).on("line", (line) => {
@@ -87,7 +93,12 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
             onEvent?.({ type: "session.started", sessionId: ev.thread_id });
             break;
           case "item.completed":
-            absorbItem(out, ev.item, errors);
+            try {
+              absorbItem(out, ev.item, errors, maxOutputBytes);
+            } catch (error) {
+              errors.push(error.message);
+              proc.kill();
+            }
             break;
           case "turn.completed":
             out.usage = ev.usage;
@@ -117,7 +128,7 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
           reject,
           e.code === "ENOENT"
             ? new Error(
-                `Codex CLI not found (tried "${CODEX_BIN}"). Install it and run \`codex login\`, or set CODEX_BIN to its path.`
+                `Codex CLI not found (tried "${bin}"). Install it and run \`codex login\`, or set CODEX_BIN to its path.`
               )
             : e
         )
@@ -146,7 +157,7 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
 
     async status() {
       const version = await new Promise((resolve) => {
-        const p = spawn(CODEX_BIN, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
+        const p = spawnImpl(bin, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
         let v = "";
         p.stdout.on("data", (d) => (v += d.toString()));
         p.on("close", () => resolve(v.trim() || "unknown"));
@@ -163,16 +174,21 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
 
     async ask({ prompt, cwd, sessionId, newSession, model, mode, options, signal, onEvent }) {
       return queue.run(sessionId ?? sessions.get(cwd) ?? cwd, async () => {
-        throwIfAborted(signal);
-        onEvent?.({ type: "turn.started" });
-        const threadId = sessionId ?? (newSession ? null : sessions.get(cwd) ?? null);
-        if (threadId) onEvent?.({ type: "session.started", sessionId: threadId });
-        const res = await runExec({ prompt, cwd, threadId, model, mode, options, signal, onEvent });
-        if (res.sessionId) {
-          sessions.set(cwd, res.sessionId);
-          if (!threadId) log(`codex: new thread ${res.sessionId} (cwd=${cwd})`);
+        const deadline = deadlineSignal(signal, timeoutMs, "Codex turn");
+        try {
+          throwIfAborted(deadline.signal);
+          onEvent?.({ type: "turn.started" });
+          const threadId = sessionId ?? (newSession ? null : sessions.get(cwd) ?? null);
+          if (threadId) onEvent?.({ type: "session.started", sessionId: threadId });
+          const res = await runExec({ prompt, cwd, threadId, model, mode, options, signal: deadline.signal, onEvent });
+          if (res.sessionId) {
+            sessions.set(cwd, res.sessionId);
+            if (!threadId) log(`codex: new thread ${res.sessionId} (cwd=${cwd})`);
+          }
+          return res;
+        } finally {
+          deadline.cleanup();
         }
-        return res;
       });
     },
 
@@ -194,14 +210,14 @@ export function createCodexAdapter({ defaultModel, defaultMode, log }) {
   };
 }
 
-function absorbItem(out, item, errors) {
+export function absorbItem(out, item, errors, maxOutputBytes) {
   if (!item) return;
   switch (item.type) {
     case "agent_message":
-      out.text += (out.text ? "\n" : "") + (item.text ?? "");
+      out.text = appendLimited(out.text, (out.text ? "\n" : "") + (item.text ?? ""), maxOutputBytes, "Codex message");
       break;
     case "reasoning":
-      out.thoughts += (out.thoughts ? "\n" : "") + (item.text ?? item.summary ?? "");
+      out.thoughts = appendLimited(out.thoughts, (out.thoughts ? "\n" : "") + (item.text ?? item.summary ?? ""), maxOutputBytes, "Codex thoughts");
       break;
     case "command_execution":
       out.toolCalls.push(toolSummary(`Running: ${item.command}`, item.status ?? (item.exit_code === 0 ? "completed" : "failed")));
@@ -226,7 +242,7 @@ function absorbItem(out, item, errors) {
   }
 }
 
-function normalizeCodexEvent(event) {
+export function normalizeCodexEvent(event) {
   if (event.type === "thread.started") return { type: "agent.started" };
   if (event.type === "turn.started") return { type: "agent.turn_started" };
   if (event.type === "turn.completed") return { type: "agent.turn_completed", usage: event.usage };

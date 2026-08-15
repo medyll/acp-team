@@ -190,6 +190,12 @@ interfere:
 { "agent": "codex", "prompt": "What breaks if we drop the retry wrapper?", "mode": "plan" }
 ```
 
+Or ask all of them at once and read each answer with `agent_watch`:
+
+```json
+{ "agents": ["kimi", "codex", "opencode"], "prompt": "What breaks if we drop the retry wrapper?", "mode": "plan" }
+```
+
 Work on another project without leaving this one:
 
 ```json
@@ -208,7 +214,8 @@ Continue an earlier conversation explicitly:
 | --- | --- |
 | `agent_start` | Start a supervised turn and return a `run_id` immediately |
 | `agent_watch` | Read status and new events; supports bounded long-polling with `after_event` and `wait_ms` |
-| `agent_stop` | Stop a queued or running turn by `run_id`, even before a session id exists |
+| `agent_stop` | Stop a waiting, queued or running turn by `run_id`, even before a session id exists |
+| `agent_fanout` | Send one prompt to several agents as independent runs, to compare their answers |
 | `agent_ask` | Blocking compatibility API; now emits MCP progress notifications and honors request cancellation |
 | `agent_list` | Which agents exist, what each is good for, which modes they accept |
 | `agent_status` | Transport, version, models, defaults, open sessions and supervised runs |
@@ -217,6 +224,7 @@ Continue an earlier conversation explicitly:
 | `usage_report` | Usage ledger aggregated by agent and model |
 | `model_recommend` | Configured cheap, standard or premium model candidates for a task |
 | `budget_check` | Check an estimated task cost before delegating it |
+| `usage_compact` | Archive ledger entries past the retention window into monthly rollups |
 | `usage_sync` | Refresh OpenRouter credits and model-price catalog, without storing its key |
 | `ollama_status` | Ollama endpoint, version, available models and running models |
 | `ollama_models` | List models available from the configured Ollama endpoint |
@@ -237,6 +245,33 @@ For interactive delegation, prefer this control loop:
 Observable events include session creation, visible assistant text, plans, tool calls,
 commands and file changes. Private reasoning payloads are deliberately not exposed.
 
+### Concurrency
+
+Each agent runs at most `AGENT_BRIDGE_MAX_CONCURRENT` turns at a time (2 by
+default). Past that, a run stays `queued`, emits a `run.waiting` event and is
+admitted as soon as a slot frees — a delegation is a CLI subprocess, and an
+unbounded number of them competes for the same machine and the same vendor rate
+limit. Limits are per agent, so a busy Codex never blocks Kimi. `agent_status`
+reports the current `capacity`, and `agent_stop` works on a run that is still
+waiting for its slot.
+
+### What survives a restart
+
+Live run state is in memory on purpose: a restarted bridge owns no agent
+sessions and could not resume anything. Run *lifecycle* is journalled to
+`runs.jsonl` under the data directory — queued, admitted, completed, failed,
+cancelled — so the history of what was delegated remains after a crash. Agent
+answers and reasoning are not journalled.
+
+### What the confirmations do and do not do
+
+Write-capable modes require `confirm_write`, and `yolo` requires `confirm_yolo`.
+These are a deliberate speed bump, not an authorization boundary: any caller
+able to invoke the tool can also send the literal string. What they buy is that
+nothing reaches a write-capable mode by defaulting into it or by a model
+guessing a flag. The real boundary is the sandbox each adapter requests from its
+CLI, plus whatever approval the host requires before the tool runs at all.
+
 ## Modes
 
 `mode` decides how much the agent is allowed to do.
@@ -248,8 +283,11 @@ commands and file changes. Private reasoning payloads are deliberately not expos
 | `auto` | ACP mode `auto` | same as `default` |
 | `yolo` | ACP mode `yolo` | `--dangerously-bypass-approvals-and-sandbox` |
 
-`yolo` on Codex removes the sandbox entirely. Prefer `plan` for anything you
-have not decided to let an agent execute.
+When an MCP request omits `mode`, ACP Team now uses `plan` rather than an
+agent-specific write-capable default. `default` and `auto` require
+`confirm_write: "ALLOW_AGENT_WRITE"`. `yolo` requires
+`confirm_yolo: "ALLOW_UNSANDBOXED_AGENT"`. `yolo` on Codex removes the sandbox
+entirely, so keep `plan` for work that has not explicitly been authorized.
 
 ## Models and settings
 
@@ -314,7 +352,10 @@ operations are deliberately not exposed.
 | --- | --- | --- |
 | `AGENT_BRIDGE_AGENTS` | all | Comma-separated roster. Anything not listed is not advertised |
 | `AGENT_BRIDGE_CWD` | process cwd | Working directory for new sessions. Leave unset; the default already follows the host session |
-| `AGENT_BRIDGE_DATA_DIR` | `.acp-team/` under bridge cwd | Private local usage ledger and budget configuration |
+| `AGENT_BRIDGE_DATA_DIR` | `.acp-team/` under bridge cwd | Private local usage ledger, run journal and budget configuration |
+| `AGENT_BRIDGE_MAX_CONCURRENT` | `2` | Maximum turns running at once **per agent**; further runs wait for a slot |
+| `ACP_TEAM_LOG_LEVEL` | `info` | Diagnostic verbosity on stderr: `error`, `warn`, `info` or `debug` |
+| `ACP_TEAM_LOG_FORMAT` | `text` | Set to `json` for one structured log object per line |
 | `OPENROUTER_MANAGEMENT_KEY` | unset | Management key used only by `usage_sync` to read OpenRouter credits and catalog |
 | `KIMI_BIN` | `kimi` | Kimi binary |
 | `KIMI_BRIDGE_MODEL` | agent default | Model for new Kimi sessions |
