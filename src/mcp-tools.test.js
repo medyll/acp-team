@@ -10,7 +10,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 test("exposes supervised run controls without starting an agent", async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.join(here, "mcp-server.js")],
+    args: [path.join(here, "cli.js")],
     stderr: "pipe"
   });
   const client = new Client({ name: "acp-team-tools-test", version: "1.0.0" });
@@ -21,23 +21,43 @@ test("exposes supervised run controls without starting an agent", async () => {
     assert.deepEqual(names.sort(), [
       "agent_ask",
       "agent_cancel",
+      "agent_fanout",
       "agent_list",
       "agent_start",
       "agent_status",
       "agent_stop",
       "agent_watch",
       "budget_check",
+      "config_apply",
+      "config_inspect",
+      "config_rollback",
+      "config_stage",
+      "model_rate",
+      "model_ratings",
       "model_recommend",
+      "ollama_model_show",
+      "ollama_models",
+      "ollama_pull",
+      "ollama_running",
+      "ollama_status",
+      "run_history",
+      "run_retry",
+      "run_show",
+      "system_doctor",
+      "usage_compact",
       "usage_report",
       "usage_status",
       "usage_sync"
     ]);
+    const askSchema = response.tools.find((tool) => tool.name === "agent_ask").inputSchema.properties;
+    assert.ok(askSchema.authorization);
+    assert.equal(askSchema.confirm_write, undefined);
 
     const listed = await client.callTool({ name: "agent_list", arguments: {} });
     const agents = JSON.parse(listed.content[0].text);
     assert.deepEqual(
       agents.map((agent) => agent.id).sort(),
-      ["codex", "kimi", "opencode"]
+      ["codex", "kimi", "ollama", "opencode"]
     );
 
     const usage = await client.callTool({ name: "usage_status", arguments: { period: "month" } });

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import readline from "node:readline";
+import { appendLimited } from "../../resilience.js";
 
 const PROTOCOL_VERSION = 1;
 
@@ -23,6 +24,8 @@ export class AcpClient {
     clientName = "acp-team-bridge",
     missingHint = "Install the agent CLI or configure its binary path.",
     permissionPolicy = "allow",
+    requestTimeoutMs = 10 * 60_000,
+    maxOutputBytes = 4 * 1024 * 1024,
     onLog = () => {}
   } = {}) {
     if (!command) throw new Error("ACP client command is required");
@@ -34,6 +37,8 @@ export class AcpClient {
     this.clientName = clientName;
     this.missingHint = missingHint;
     this.permissionPolicy = permissionPolicy;
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.maxOutputBytes = maxOutputBytes;
     this.onLog = onLog;
     this.proc = null;
     this.rl = null;
@@ -66,7 +71,10 @@ export class AcpClient {
         e.code === "ENOENT"
           ? new Error(`${this.agentLabel} CLI not found (tried "${this.displayCommand}"). ${this.missingHint}`)
           : e;
-      for (const { reject } of this.pending.values()) reject(err);
+      for (const { reject, timer } of this.pending.values()) {
+        clearTimeout(timer);
+        reject(err);
+      }
       this.pending.clear();
       this.proc = null;
       this.startPromise = null;
@@ -74,7 +82,10 @@ export class AcpClient {
     this.proc.on("exit", (code, signal) => {
       const hint = this.initResult ? "" : ` ${this.missingHint}`;
       const err = new Error(`${this.agentLabel} ACP exited (code=${code} signal=${signal}).${hint}`);
-      for (const { reject } of this.pending.values()) reject(err);
+      for (const { reject, timer } of this.pending.values()) {
+        clearTimeout(timer);
+        reject(err);
+      }
       this.pending.clear();
       this.sessions.clear();
       this.proc = null;
@@ -82,7 +93,7 @@ export class AcpClient {
       this.initResult = null;
     });
     this.proc.stderr.on("data", (d) => {
-      if (!this.stopping) this.onLog(`${this.agentLabel} stderr: ${d.toString().trim()}`);
+      if (!this.stopping) this.onLog(`${this.agentLabel} stderr: ${d.toString().slice(0, 8_192).trim()}`);
     });
 
     this.rl = readline.createInterface({ input: this.proc.stdout });
@@ -112,6 +123,7 @@ export class AcpClient {
       const entry = this.pending.get(msg.id);
       if (!entry) return;
       this.pending.delete(msg.id);
+      clearTimeout(entry.timer);
       if (msg.error) entry.reject(new Error(`${msg.error.message} (code ${msg.error.code})`));
       else entry.resolve(msg.result);
       return;
@@ -134,12 +146,14 @@ export class AcpClient {
   #handleAgentRequest(msg) {
     if (msg.method === "session/request_permission") {
       const options = msg.params?.options ?? [];
+      const sessionMode = this.currentConfig(msg.params?.sessionId, "mode");
+      const effectivePolicy = !sessionMode || sessionMode === "plan" ? "deny" : this.permissionPolicy;
       const wanted =
-        this.permissionPolicy === "deny"
+        effectivePolicy === "deny"
           ? ["reject_always", "reject_once"]
           : ["allow_always", "allow_once"];
       const picked = wanted.map((k) => options.find((o) => o.kind === k)).find(Boolean) ?? options[0];
-      this.onLog(`permission ${this.permissionPolicy}: ${picked?.optionId ?? "none"}`);
+      this.onLog(`permission ${effectivePolicy}: ${picked?.optionId ?? "none"}`);
       this.#send({
         jsonrpc: "2.0",
         id: msg.id,
@@ -166,8 +180,20 @@ export class AcpClient {
   request(method, params) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.#send({ jsonrpc: "2.0", id, method, params });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        this.proc?.kill?.();
+        reject(new Error(`${this.agentLabel} ACP request ${method} timed out after ${this.requestTimeoutMs}ms`));
+      }, this.requestTimeoutMs);
+      timer.unref?.();
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.#send({ jsonrpc: "2.0", id, method, params });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -250,24 +276,31 @@ export class AcpClient {
     if (!session) throw new Error(`Unknown session: ${sessionId}`);
 
     const out = { text: "", thoughts: "", toolCalls: [] };
+    let outputError;
     const collect = (update) => {
-      switch (update.sessionUpdate) {
-        case "agent_message_chunk":
-          out.text += contentText(update.content);
-          break;
-        case "agent_thought_chunk":
-          out.thoughts += contentText(update.content);
-          break;
-        case "tool_call":
-        case "tool_call_update": {
-          const id = update.toolCallId;
-          const existing = out.toolCalls.find((t) => t.toolCallId === id);
-          if (existing) Object.assign(existing, update);
-          else out.toolCalls.push({ ...update });
-          break;
+      try {
+        switch (update.sessionUpdate) {
+          case "agent_message_chunk":
+            out.text = appendLimited(out.text, contentText(update.content), this.maxOutputBytes, "ACP agent message");
+            break;
+          case "agent_thought_chunk":
+            out.thoughts = appendLimited(out.thoughts, contentText(update.content), this.maxOutputBytes, "ACP agent thoughts");
+            break;
+          case "tool_call":
+          case "tool_call_update": {
+            const id = update.toolCallId;
+            const existing = out.toolCalls.find((t) => t.toolCallId === id);
+            if (existing) Object.assign(existing, update);
+            else if (out.toolCalls.length < 1_000) out.toolCalls.push({ ...update });
+            break;
+          }
+          default:
+            break;
         }
-        default:
-          break;
+      } catch (error) {
+        outputError = error;
+        this.cancel(sessionId);
+        return;
       }
       onUpdate?.(update);
     };
@@ -278,6 +311,7 @@ export class AcpClient {
         sessionId,
         prompt: [{ type: "text", text }]
       });
+      if (outputError) throw outputError;
       return { stopReason: res?.stopReason ?? "end_turn", usage: res?.usage, ...out };
     } finally {
       session.collectors.delete(collect);

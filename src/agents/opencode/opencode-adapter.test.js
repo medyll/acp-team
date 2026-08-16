@@ -38,3 +38,12 @@ test("maps common bridge modes onto OpenCode build and plan modes", async () => 
   ]);
 });
 
+test("rejects removed unsandboxed modes before reaching ACP", async () => {
+  const opencode = createOpenCodeAdapter({
+    client: { start: async () => { throw new Error("must not start"); } },
+    defaultMode: "default",
+    log: () => {}
+  });
+  await assert.rejects(() => opencode.ask({ cwd: "C:/work", prompt: "go", mode: "yolo" }), /Unsupported agent mode/);
+});
+

@@ -21,7 +21,12 @@
  */
 
 /** Modes shared by every adapter; each one maps them onto its own vocabulary. */
-export const MODES = ["default", "plan", "auto", "yolo"];
+export const MODES = ["default", "plan", "auto"];
+
+export function assertSupportedMode(mode) {
+  if (mode && !MODES.includes(mode)) throw new Error(`Unsupported agent mode "${mode}". Available: ${MODES.join(", ")}`);
+  return mode;
+}
 
 /** Normalize a tool call from any transport into the common summary shape. */
 export function toolSummary(title, status) {

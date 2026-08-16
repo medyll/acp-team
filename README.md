@@ -2,22 +2,32 @@
 
 Delegate coding work to other agents from inside your own.
 
-`acp-team` is an MCP server that puts Kimi, Codex and OpenCode behind one tool. Ask any
-of them a question, hand any of them a task, and get back the same shape of
-answer. They run in your project, with their own file and shell tools, and report
-what they did.
+`acp-team` is an extensible MCP control plane for other LLMs and agents. It puts
+heterogeneous transports behind one supervised interface: ask a model a question,
+hand a tool-capable agent a task, and get back the same response shape.
 
-The transports differ underneath and you never have to care: Kimi and OpenCode
-speak the Agent Client Protocol, while Codex is driven through its CLI.
+Kimi, Codex, OpenCode and Ollama adapters are included today. They are bundled
+implementations, not a closed support list: any LLM runtime or agent can join the
+team through an adapter implementing the shared contract.
+
+Transports can use ACP, a vendor CLI, a native HTTP API or another suitable
+protocol. ACP Team normalizes sessions, progress, cancellation, usage and results
+without requiring every LLM to speak the same protocol.
 
 ## Install
 
-You need Node 20 or later, plus the agents themselves. Install whichever you
-want to use and log in:
+You need Node 20 or later, plus whichever agents or model runtimes you want to
+use. These are examples for the bundled adapters, not the complete compatibility
+surface:
 
     npm install -g @moonshot-ai/kimi-code    # then: kimi login
     npm install -g @openai/codex             # then: codex login
     npm install -g opencode-ai               # then: opencode auth login
+
+Ollama is optional. Install it from https://ollama.com/download, start it, and
+pull at least one model. Local API access needs no key:
+
+    ollama pull qwen3-coder
 
 The bridge itself needs no installation. Register it with your MCP host and
 `npx` fetches it on first use.
@@ -45,11 +55,10 @@ whole team gets it:
     codex mcp add acp-team -- npx -y @medyll/acp-team
 
 **Any other MCP host.** Nothing here is host specific. Run
-`npx -y @medyll/acp-team` as a stdio server and you get the same seven tools.
+`npx -y @medyll/acp-team` as a stdio server and you get the same tools.
 
-**Only one agent installed?** Set `AGENT_BRIDGE_AGENTS=codex` (or `kimi`, or
-`opencode`) in the
-server's environment. The bridge then advertises only that one, rather than
+**Only some adapters enabled?** Set `AGENT_BRIDGE_AGENTS` to their registered ids,
+for example `codex,ollama`. The bridge advertises only that roster rather than
 offering an agent that cannot answer.
 
 If a CLI is not on your PATH, point `KIMI_BIN`, `CODEX_BIN` or `OPENCODE_BIN` at it.
@@ -59,13 +68,122 @@ If a CLI is not on your PATH, point `KIMI_BIN`, `CODEX_BIN` or `OPENCODE_BIN` at
 Ask your host to call `agent_status`. You should see each agent's version,
 transport and defaults. A missing CLI is reported by name, with the fix.
 
+## Command line
+
+Running `acp-team` without arguments still starts the MCP stdio server. Human-facing
+commands use explicit subcommands:
+
+```sh
+acp-team help
+acp-team prompt "Review this project" --to codex --mode plan
+acp-team chat --with kimi
+acp-team prompt "Review this function" --to ollama --model qwen3-coder
+acp-team configure "Optimize local model usage" --controller ollama --with qwen3-coder
+acp-team doctor
+acp-team agent status
+acp-team usage report --period month
+```
+
+`prompt` and `chat` default to the read-only `plan` mode. Passing `default` or
+`auto` is an explicit choice to allow workspace writes.
+
+Write access uses a short-lived token scoped to one agent, directory and mode:
+
+```sh
+acp-team authorize grant --agent codex --cwd . --mode default --for 15m --uses 1
+acp-team prompt "Implement the approved change" --to codex --mode default --authorization auth_...
+acp-team authorize list
+acp-team authorize revoke <authorization-id>
+```
+
+Only the token hash is stored. Tokens expire, have a bounded use count and
+cannot be reused for another agent, directory or mode.
+
+`--agent '*'` grants across agents, which is what `agent_fanout` needs in a
+write-capable mode: every agent in the fan-out consumes one use, so give the
+token at least as many uses as there are agents. The fan-out is authorized as a
+single transaction: a token that does not cover all of it fails the call before
+any run starts and without spending a use, rather than letting the first agent
+write while the rest are refused.
+
+Operational commands cover diagnostics, adapters, history and compatibility:
+
+```sh
+acp-team doctor --agent codex
+acp-team doctor --fix
+acp-team agent add vendor --command vendor-cli --args '["acp"]' --enable
+acp-team agent probe vendor
+acp-team run history --limit 50
+acp-team run show <run-id>
+acp-team compat test codex
+acp-team compat test codex --live
+acp-team model rate --run <run-id> --rating 5 --note "excellent"
+acp-team model ratings
+```
+
+Live compatibility probes are opt-in and always use `plan` mode.
+
+### AI-assisted configuration
+
+`configure` runs a guided configuration interview. The controller reads the current
+settings and usage, asks a small set of material questions, shows progress while it
+works, validates the resulting changes, and saves a proposal. An interactive session
+then asks whether to apply it; a non-interactive session never applies by default.
+
+```sh
+acp-team configure
+acp-team configure "Keep reviews strong under a $30 monthly budget"
+acp-team configure "Refresh model prices and optimize profiles" --with opus
+acp-team configure "Same objective" --avec sonnet
+acp-team configure "Use another controller" --controller codex --with gpt-5
+```
+
+`--with` (or its French alias `--avec`) selects the controller's model. Claude is the
+default controller; `--controller` selects a different installed agent.
+
+Every proposal has an id and an on-disk JSON representation:
+
+```sh
+acp-team config diff cfg_20260815...
+acp-team config apply cfg_20260815...
+acp-team config rollback history_20260815...
+```
+
+Applying and rolling back require interactive confirmation. Non-interactive
+configuration requires both `--apply` and `--yes`. Proposal validation refuses
+secret, token and API-key fields.
+
+Configuration remains JSON because ACP Team already uses JSON for budgets, model
+profiles, providers and promotions. Proposals and rollback snapshots are versioned
+JSON too, avoiding a second parser and a migration to TOML without a concrete need.
+
+### Research and install another CLI
+
+The controller can research a CLI's official installation and authentication docs,
+then present a structured dry-run:
+
+```sh
+acp-team cli research "vendor CLI" --with opus
+acp-team cli install "vendor CLI" --dry-run
+acp-team cli install "vendor CLI" --execute
+```
+
+An executable plan must name the publisher and package, pin a stable version,
+and cite HTTPS provenance evidence including the vendor's official domain.
+
+Installation requires an HTTPS official source and a structured package-manager
+command. Shell composition, download-and-execute pipelines and secret storage are
+refused. Interactive execution always asks for confirmation; non-interactive
+execution requires both `--execute` and `--yes`.
+
 ## How it works
 
 ```
-                                 +--(ACP / JSON-RPC over stdio)--> kimi acp
+                                 +--(ACP / JSON-RPC)--> ACP agents
 your agent --(MCP / stdio)--> acp-team
-                                 +--(ACP / JSON-RPC over stdio)--> opencode acp
-                                 +--(codex exec --json, JSONL)-----> codex
+                                 +--(CLI events)------> CLI agents
+                                 +--(HTTP APIs)-------> model runtimes
+                                 +--(adapter contract)-> future LLMs
 ```
 
 Your host stays the host. The bridge is the client for whatever protocol each
@@ -98,7 +216,7 @@ edit.
 Hand off a self-contained task and let the agent do the work:
 
 ```json
-{ "agent": "codex", "prompt": "Add a --dry-run flag to the migrate command, with a test.", "mode": "default" }
+{ "agent": "codex", "prompt": "Add a --dry-run flag to the migrate command, with a test.", "mode": "default", "authorization": "auth_..." }
 ```
 
 Put a long-context model on a large question:
@@ -113,6 +231,12 @@ interfere:
 ```json
 { "agent": "kimi",  "prompt": "What breaks if we drop the retry wrapper?", "mode": "plan" }
 { "agent": "codex", "prompt": "What breaks if we drop the retry wrapper?", "mode": "plan" }
+```
+
+Or ask all of them at once and read each answer with `agent_watch`:
+
+```json
+{ "agents": ["kimi", "codex", "opencode"], "prompt": "What breaks if we drop the retry wrapper?", "mode": "plan" }
 ```
 
 Work on another project without leaving this one:
@@ -132,17 +256,34 @@ Continue an earlier conversation explicitly:
 | Tool | Purpose |
 | --- | --- |
 | `agent_start` | Start a supervised turn and return a `run_id` immediately |
-| `agent_watch` | Read status and new events; supports bounded long-polling with `after_event` and `wait_ms` |
-| `agent_stop` | Stop a queued or running turn by `run_id`, even before a session id exists |
+| `agent_watch` | Read status and new events; supports bounded long-polling with `after_event`, `wait_ms` and `until` |
+| `agent_stop` | Stop a waiting, queued or running turn by `run_id`, even before a session id exists |
+| `agent_fanout` | Send one prompt to several agents as independent runs, to compare their answers |
 | `agent_ask` | Blocking compatibility API; now emits MCP progress notifications and honors request cancellation |
 | `agent_list` | Which agents exist, what each is good for, which modes they accept |
 | `agent_status` | Transport, version, models, defaults, open sessions and supervised runs |
 | `agent_cancel` | Legacy cancellation by agent session id |
+| `run_history` | Read lifecycle-only history across bridge restarts |
+| `run_show` | Show a live retained run or persisted lifecycle |
+| `run_retry` | Retry a finished run still retained in memory |
 | `usage_status` | Observed tokens, reported cost, configured budget, reset period and active promotion |
 | `usage_report` | Usage ledger aggregated by agent and model |
-| `model_recommend` | Configured cheap, standard or premium model candidates for a task |
+| `model_recommend` | Candidates ranked by configuration, rating, reliability, latency and observed cost |
+| `model_rate` | Attach a human 1-5 rating to a run or agent/model pair |
+| `model_ratings` | Show human ratings and observed quality signals |
 | `budget_check` | Check an estimated task cost before delegating it |
+| `usage_compact` | Archive ledger entries past the retention window into monthly rollups |
 | `usage_sync` | Refresh OpenRouter credits and model-price catalog, without storing its key |
+| `ollama_status` | Ollama endpoint, version, available models and running models |
+| `ollama_models` | List models available from the configured Ollama endpoint |
+| `ollama_model_show` | Inspect one model's metadata and capabilities |
+| `ollama_running` | List models currently loaded into memory |
+| `ollama_pull` | Pull a model after explicit confirmation |
+| `config_inspect` | Read configuration and provenance before proposing changes |
+| `config_stage` | Validate and save a proposal without applying it |
+| `config_apply` | Apply an explicitly approved proposal and create a rollback snapshot |
+| `config_rollback` | Restore an explicitly approved snapshot |
+| `system_doctor` | Diagnose configuration, storage access and agent availability |
 
 For interactive delegation, prefer this control loop:
 
@@ -150,8 +291,41 @@ For interactive delegation, prefer this control loop:
 2. Call `agent_watch` with the last received event sequence in `after_event`.
 3. Call `agent_stop` whenever the work should end.
 
+`agent_watch` settles on the first new event by default, which is what tailing a run
+needs. When only the outcome matters, pass `until: "terminal"`: the call then waits for
+the run to finish (still bounded by `wait_ms`) and returns every unseen event at once,
+instead of costing one round trip per event on a chatty run.
+
 Observable events include session creation, visible assistant text, plans, tool calls,
 commands and file changes. Private reasoning payloads are deliberately not exposed.
+
+### Concurrency
+
+Each agent uses `runtime.maxConcurrentPerAgent` from `settings.json` (2 by
+default); `AGENT_BRIDGE_MAX_CONCURRENT` remains the higher-priority deployment
+override. Past that, a run stays `queued`, emits a `run.waiting` event and is
+admitted as soon as a slot frees — a delegation is a CLI subprocess, and an
+unbounded number of them competes for the same machine and the same vendor rate
+limit. Limits are per agent, so a busy Codex never blocks Kimi. `agent_status`
+reports the current `capacity`, and `agent_stop` works on a run that is still
+waiting for its slot.
+
+### What survives a restart
+
+Live run state is in memory on purpose: a restarted bridge owns no agent
+sessions and could not resume anything. Run *lifecycle* is journalled to
+`runs.jsonl` under the data directory — queued, admitted, completed, failed,
+cancelled — so the history of what was delegated remains after a crash. Agent
+answers and reasoning are not journalled. On startup, unfinished lifecycle
+entries are closed as `interrupted`; they are never falsely presented as resumed.
+
+### What the confirmations do and do not do
+
+Write-capable modes require a token issued outside the MCP tool surface by
+`acp-team authorize grant`. The persisted store contains only a hash and the
+scope metadata. This prevents a delegated model from manufacturing permission
+by guessing a public confirmation literal. The agent sandbox remains the final
+execution boundary.
 
 ## Modes
 
@@ -162,15 +336,26 @@ commands and file changes. Private reasoning payloads are deliberately not expos
 | `plan` | ACP mode `plan`, read-only | `sandbox_mode="read-only"` |
 | `default` | ACP mode `default` | `sandbox_mode="workspace-write"` |
 | `auto` | ACP mode `auto` | same as `default` |
-| `yolo` | ACP mode `yolo` | `--dangerously-bypass-approvals-and-sandbox` |
-
-`yolo` on Codex removes the sandbox entirely. Prefer `plan` for anything you
-have not decided to let an agent execute.
+When an MCP request omits `mode`, ACP Team now uses `plan` rather than an
+agent-specific write-capable default. `default` and `auto` require
+an `authorization` token scoped to the requested agent and directory. Unsandboxed execution is not exposed;
+keep `plan` for work that has not explicitly been authorized.
 
 ## Models and settings
 
 Set `model`, `mode` and `thinking` per call. A model set this way sticks to the
 session, so later turns keep it.
+
+`settings.json` schema v2 is also the runtime source of truth for enabled
+agents, defaults, concurrency and resilience. Existing schema v1 files are
+expanded in memory without data loss; `acp-team doctor --fix` persists the
+migration. Precedence is CLI options, then environment variables, then the JSON
+configuration, then built-in defaults.
+
+Custom agents live under `runtime.customAgents` and support the safe ACP
+transport only. Their command is executed directly with `shell: false`; shell
+composition and unsupported modes are rejected during registry creation. New
+custom agents stay disabled until explicitly enabled.
 
 ```json
 { "agent": "kimi",  "prompt": "…", "model": "kimi-code/k3", "thinking": "high" }
@@ -195,7 +380,10 @@ applied after the model, never before.
 Defaults come from the environment, and anything the bridge does not override is
 inherited from the agent's own configuration.
 
-## Agents
+## Bundled adapters
+
+This section documents the adapters shipped in this release. It does not define
+or restrict the LLMs ACP Team can support.
 
 **kimi** — Kimi Code CLI over ACP, verified against `0.33.0`, protocol `1`.
 Models: `kimi-code/kimi-for-coding`, `kimi-code/kimi-for-coding-highspeed`,
@@ -212,8 +400,14 @@ because `exec` is non-interactive and nobody is there to approve anything.
 
 **opencode** — OpenCode CLI over native ACP, verified against `1.17.11`,
 protocol `1`. One long-lived `opencode acp` process backs its sessions. Bridge
-modes `default`, `auto` and `yolo` map to OpenCode's `build` mode; `plan` maps
+modes `default` and `auto` map to OpenCode's `build` mode; `plan` maps
 to `plan`. Models come from the providers configured by `opencode auth login`.
+
+**ollama** — Native Ollama HTTP API integration for local or Ollama Cloud models.
+It participates in delegated prompts, supervised runs, sessions and usage
+reporting, but receives no file or shell tools. Dedicated MCP tools cover model
+listing, inspection, running status and confirmed pulls. Destructive model
+operations are deliberately not exposed.
 
 ## Environment
 
@@ -221,13 +415,16 @@ to `plan`. Models come from the providers configured by `opencode auth login`.
 | --- | --- | --- |
 | `AGENT_BRIDGE_AGENTS` | all | Comma-separated roster. Anything not listed is not advertised |
 | `AGENT_BRIDGE_CWD` | process cwd | Working directory for new sessions. Leave unset; the default already follows the host session |
-| `AGENT_BRIDGE_DATA_DIR` | `.acp-team/` under bridge cwd | Private local usage ledger and budget configuration |
+| `AGENT_BRIDGE_DATA_DIR` | `.acp-team/` under bridge cwd | Private local usage ledger, run journal and budget configuration |
+| `AGENT_BRIDGE_MAX_CONCURRENT` | `2` | Maximum turns running at once **per agent**; further runs wait for a slot |
+| `ACP_TEAM_LOG_LEVEL` | `info` | Diagnostic verbosity on stderr: `error`, `warn`, `info` or `debug` |
+| `ACP_TEAM_LOG_FORMAT` | `text` | Set to `json` for one structured log object per line |
 | `OPENROUTER_MANAGEMENT_KEY` | unset | Management key used only by `usage_sync` to read OpenRouter credits and catalog |
 | `KIMI_BIN` | `kimi` | Kimi binary |
 | `KIMI_BRIDGE_MODEL` | agent default | Model for new Kimi sessions |
 | `KIMI_BRIDGE_MODE` | `auto` | Default Kimi mode |
 | `KIMI_BRIDGE_PERMISSION` | `allow` | How permission requests are answered: `allow` or `deny` |
-| `CODEX_BIN` | `codex` | Codex binary |
+| `CODEX_BIN` | Windows standalone `current` package when available; otherwise `codex` | Codex binary |
 | `CODEX_BRIDGE_MODEL` | Codex default | Model for Codex turns |
 | `CODEX_BRIDGE_MODE` | `default` | Default Codex sandbox mode |
 | `CODEX_BRIDGE_SKIP_GIT_CHECK` | `true` | Pass `--skip-git-repo-check`; set `false` to let Codex refuse non-git directories |
@@ -235,6 +432,9 @@ to `plan`. Models come from the providers configured by `opencode auth login`.
 | `OPENCODE_BRIDGE_MODEL` | OpenCode default | Model for new OpenCode sessions |
 | `OPENCODE_BRIDGE_MODE` | `default` | Default bridge mode (`plan` or a mode mapped to OpenCode `build`) |
 | `OPENCODE_BRIDGE_PERMISSION` | `allow` | How ACP permission requests are answered: `allow` or `deny` |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Local or cloud Ollama API endpoint |
+| `OLLAMA_API_KEY` | unset | Bearer token for direct Ollama Cloud access; never stored by ACP Team |
+| `OLLAMA_BRIDGE_MODEL` | unset | Default model for Ollama conversations; otherwise each prompt must name one |
 
 Delegated turns can run for minutes. If one times out in Claude Code, raise
 `MCP_TOOL_TIMEOUT` (milliseconds).
@@ -245,7 +445,10 @@ The first `usage_status` call creates editable JSON files in the data directory:
 `budgets.json` (period and per-run limits), `models.json` (the short list for
 `cheap`, `standard` and `premium` work), `providers.json` (billing metadata)
 and `promotions.json` (temporary offers with an expiry). Completed agent calls
-append observed metrics to `usage-ledger.jsonl`.
+append observed metrics to `usage-ledger.jsonl`. Human ratings are stored in
+`model-ratings.jsonl`; the recommendation order combines them with observed
+success, latency and cost. Missing evidence stays explicit and receives low
+confidence rather than a fabricated score.
 
 `usage_sync` saves the OpenRouter balance in `providers.json` and a normalized
 catalogue with price, context and capability data in `model-catalog.json`. It
@@ -260,7 +463,7 @@ ACP Team keeps reported costs distinct from calculated prices and estimates.
 
 ```
 src/
-  mcp-server.js          MCP surface: the seven agent_* tools
+  mcp-server.js          MCP server composition and runtime wiring
   mcp-smoke-test.js      Full chain, every agent
   agents/
     agent.js             Shared adapter contract and mode vocabulary
