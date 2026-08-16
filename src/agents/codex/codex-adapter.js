@@ -1,11 +1,30 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { win32 as win32Path } from "node:path";
 import readline from "node:readline";
 import { assertSupportedMode, MODES, toolSummary } from "../agent.js";
 import { createSessionQueue } from "../session-queue.js";
 import { appendLimited, deadlineSignal } from "../../resilience.js";
 
-const CODEX_BIN = process.env.CODEX_BIN || (process.platform === "win32" ? "codex.exe" : "codex");
+const CODEX_BIN = resolveCodexBin();
 const SKIP_GIT_CHECK = process.env.CODEX_BRIDGE_SKIP_GIT_CHECK !== "false";
+
+export function resolveCodexBin({ env = process.env, platform = process.platform, exists = existsSync } = {}) {
+  if (env.CODEX_BIN) return env.CODEX_BIN;
+  if (platform !== "win32") return "codex";
+
+  const codexHome = env.CODEX_HOME || (env.USERPROFILE ? win32Path.join(env.USERPROFILE, ".codex") : null);
+  if (codexHome) {
+    // The desktop installer exposes only the package's bin directory on PATH.
+    // Launching through that junction hides the sibling codex-resources folder
+    // required by the elevated Windows sandbox. `current` is the installer's
+    // stable, update-safe junction to the active standalone release.
+    const standalone = win32Path.join(codexHome, "packages", "standalone", "current", "bin", "codex.exe");
+    if (exists(standalone)) return standalone;
+  }
+
+  return "codex.exe";
+}
 
 /**
  * Codex CLI does not speak ACP (no `codex acp` subcommand as of 0.145.0).

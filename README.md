@@ -424,7 +424,7 @@ operations are deliberately not exposed.
 | `KIMI_BRIDGE_MODEL` | agent default | Model for new Kimi sessions |
 | `KIMI_BRIDGE_MODE` | `auto` | Default Kimi mode |
 | `KIMI_BRIDGE_PERMISSION` | `allow` | How permission requests are answered: `allow` or `deny` |
-| `CODEX_BIN` | `codex` | Codex binary |
+| `CODEX_BIN` | Windows standalone `current` package when available; otherwise `codex` | Codex binary |
 | `CODEX_BRIDGE_MODEL` | Codex default | Model for Codex turns |
 | `CODEX_BRIDGE_MODE` | `default` | Default Codex sandbox mode |
 | `CODEX_BRIDGE_SKIP_GIT_CHECK` | `true` | Pass `--skip-git-repo-check`; set `false` to let Codex refuse non-git directories |

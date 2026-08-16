@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { absorbItem, createCodexAdapter, normalizeCodexEvent } from "./codex-adapter.js";
+import { absorbItem, createCodexAdapter, normalizeCodexEvent, resolveCodexBin } from "./codex-adapter.js";
 
 /** Minimal stand-in for a `codex exec` process we can drive line by line. */
 function fakeCodex() {
@@ -31,6 +31,23 @@ function fakeCodex() {
 function adapterFor(spawnImpl, overrides = {}) {
   return createCodexAdapter({ defaultMode: "default", log: () => {}, spawnImpl, bin: "codex-test", ...overrides });
 }
+
+test("uses Codex's complete standalone package on Windows instead of the PATH bin junction", () => {
+  const candidate = "C:\\Users\\Ada\\.codex\\packages\\standalone\\current\\bin\\codex.exe";
+  assert.equal(
+    resolveCodexBin({ env: { USERPROFILE: "C:\\Users\\Ada" }, platform: "win32", exists: (path) => path === candidate }),
+    candidate
+  );
+});
+
+test("keeps explicit CODEX_BIN precedence and falls back when no standalone package exists", () => {
+  assert.equal(
+    resolveCodexBin({ env: { CODEX_BIN: "D:\\tools\\codex.exe" }, platform: "win32", exists: () => true }),
+    "D:\\tools\\codex.exe"
+  );
+  assert.equal(resolveCodexBin({ env: { USERPROFILE: "C:\\Users\\Ada" }, platform: "win32", exists: () => false }), "codex.exe");
+  assert.equal(resolveCodexBin({ env: {}, platform: "linux", exists: () => false }), "codex");
+});
 
 test("plan mode asks for a read-only sandbox through a config override", async () => {
   const { spawned, spawnImpl } = fakeCodex();
