@@ -26,6 +26,11 @@ test("kills a stalled Claude controller after its deadline", async () => {
     return child;
   };
   const controller = createController({ spawnImpl, timeoutMs: 5 });
-  await assert.rejects(() => controller.prompt("configure"), /timed out/);
-  assert.equal(killed, true);
+  const keepAlive = setInterval(() => {}, 1_000);
+  try {
+    await assert.rejects(() => controller.prompt("configure"), /timed out/);
+    assert.equal(killed, true);
+  } finally {
+    clearInterval(keepAlive);
+  }
 });

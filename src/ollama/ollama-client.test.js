@@ -26,7 +26,12 @@ test("reports unreachable Ollama hosts clearly", async () => {
 
 test("times out stalled calls and caps response bodies", async () => {
   const stalled = createOllamaClient({ timeoutMs: 5, fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })) });
-  await assert.rejects(() => stalled.list(), /timed out/);
+  const keepAlive = setInterval(() => {}, 1_000);
+  try {
+    await assert.rejects(() => stalled.list(), /timed out/);
+  } finally {
+    clearInterval(keepAlive);
+  }
 
   const oversized = createOllamaClient({ maxResponseBytes: 16, fetchImpl: async () => new Response(JSON.stringify({ value: "x".repeat(100) })) });
   await assert.rejects(() => oversized.list(), /exceeds/);

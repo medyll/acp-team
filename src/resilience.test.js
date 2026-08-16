@@ -4,9 +4,14 @@ import { deadlineSignal, fetchWithRetry, readJsonResponse } from "./resilience.j
 
 test("deadlineSignal aborts a stalled operation", async () => {
   const deadline = deadlineSignal(undefined, 5, "test operation");
-  await new Promise((resolve) => deadline.signal.addEventListener("abort", resolve, { once: true }));
-  assert.match(deadline.signal.reason.message, /timed out/);
-  deadline.cleanup();
+  const keepAlive = setInterval(() => {}, 1_000);
+  try {
+    await new Promise((resolve) => deadline.signal.addEventListener("abort", resolve, { once: true }));
+    assert.match(deadline.signal.reason.message, /timed out/);
+  } finally {
+    deadline.cleanup();
+    clearInterval(keepAlive);
+  }
 });
 
 test("readJsonResponse rejects oversized streamed bodies", async () => {
