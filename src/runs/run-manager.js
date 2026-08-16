@@ -203,11 +203,21 @@ export function createRunManager({
     });
   }
 
-  async function watch(runId, { afterEvent = 0, waitMs = 0 } = {}) {
+  /**
+   * `until: "event"` settles on the first new event — right for tailing a run.
+   * `until: "terminal"` keeps waiting until the run finishes, so a chatty run
+   * costs one round trip instead of one per event; the mandator still gets every
+   * event it has not seen yet in the reply. Both are bounded by waitMs.
+   */
+  async function watch(runId, { afterEvent = 0, waitMs = 0, until = "event" } = {}) {
     const run = get(runId);
-    if (waitMs > 0 && run.lastEvent <= afterEvent && !TERMINAL_STATES.has(run.status)) {
+    const deadline = Date.now() + waitMs;
+    while (waitMs > 0 && !TERMINAL_STATES.has(run.status)) {
+      if (until !== "terminal" && run.lastEvent > afterEvent) break;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
       await new Promise((resolve) => {
-        const timer = setTimeout(done, waitMs);
+        const timer = setTimeout(done, remaining);
         function done() {
           clearTimeout(timer);
           run.waiters.delete(done);

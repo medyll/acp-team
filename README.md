@@ -256,7 +256,7 @@ Continue an earlier conversation explicitly:
 | Tool | Purpose |
 | --- | --- |
 | `agent_start` | Start a supervised turn and return a `run_id` immediately |
-| `agent_watch` | Read status and new events; supports bounded long-polling with `after_event` and `wait_ms` |
+| `agent_watch` | Read status and new events; supports bounded long-polling with `after_event`, `wait_ms` and `until` |
 | `agent_stop` | Stop a waiting, queued or running turn by `run_id`, even before a session id exists |
 | `agent_fanout` | Send one prompt to several agents as independent runs, to compare their answers |
 | `agent_ask` | Blocking compatibility API; now emits MCP progress notifications and honors request cancellation |
@@ -290,6 +290,11 @@ For interactive delegation, prefer this control loop:
 1. Call `agent_start` and keep its `runId`.
 2. Call `agent_watch` with the last received event sequence in `after_event`.
 3. Call `agent_stop` whenever the work should end.
+
+`agent_watch` settles on the first new event by default, which is what tailing a run
+needs. When only the outcome matters, pass `until: "terminal"`: the call then waits for
+the run to finish (still bounded by `wait_ms`) and returns every unseen event at once,
+instead of costing one round trip per event on a chatty run.
 
 Observable events include session creation, visible assistant text, plans, tool calls,
 commands and file changes. Private reasoning payloads are deliberately not exposed.

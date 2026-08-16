@@ -197,15 +197,23 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
     "agent_watch",
     {
       title: "Watch a supervised agent run",
-      description: "Return a run's state and events. Pass after_event to receive only newer events; wait_ms enables bounded long-polling.",
+      description:
+        "Return a run's state and events. Pass after_event to receive only newer events; wait_ms enables bounded long-polling. until='event' (default) returns on the first new event, until='terminal' waits for the run to finish — use it to avoid one round trip per event on a chatty run.",
       inputSchema: {
         run_id: z.string(),
         after_event: z.number().int().nonnegative().optional(),
-        wait_ms: z.number().int().min(0).max(30_000).optional()
+        wait_ms: z.number().int().min(0).max(30_000).optional(),
+        until: z.enum(["event", "terminal"]).optional()
       }
     },
-    async ({ run_id, after_event, wait_ms }) =>
-      jsonResult(await runManager.watch(run_id, { afterEvent: after_event ?? 0, waitMs: wait_ms ?? 0 }))
+    async ({ run_id, after_event, wait_ms, until }) =>
+      jsonResult(
+        await runManager.watch(run_id, {
+          afterEvent: after_event ?? 0,
+          waitMs: wait_ms ?? 0,
+          until: until ?? "event"
+        })
+      )
   );
 
   server.registerTool(
