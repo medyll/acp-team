@@ -131,6 +131,30 @@ test("normalizes codex items into observable events without leaking reasoning te
   assert.equal(normalizeCodexEvent({ type: "item.completed" }), null);
 });
 
+test("translates codex's own usage counter names into the shared shape", () => {
+  const event = normalizeCodexEvent({
+    type: "turn.completed",
+    usage: {
+      input_tokens: 368124,
+      cached_input_tokens: 331008,
+      cache_write_input_tokens: 12,
+      output_tokens: 3686,
+      reasoning_output_tokens: 1157
+    }
+  });
+  assert.deepEqual(event, {
+    type: "agent.turn_completed",
+    usage: {
+      inputTokens: 368124,
+      outputTokens: 3686,
+      thoughtTokens: 1157,
+      cachedReadTokens: 331008,
+      cachedWriteTokens: 12,
+      totalTokens: null
+    }
+  });
+});
+
 test("absorbItem records errors instead of throwing them into the stream", () => {
   const out = { text: "", thoughts: "", toolCalls: [] };
   const errors = [];

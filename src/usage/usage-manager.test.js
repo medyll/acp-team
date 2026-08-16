@@ -17,6 +17,24 @@ test("records measured usage and reports it for the current month", async () => 
   assert.match(await readFile(manager.files.ledger, "utf8"), /agent-reported/);
 });
 
+test("derives a token total when the agent reports only the parts", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
+  const manager = createUsageManager({ dataDir, now: () => new Date("2026-08-10T12:00:00Z") });
+  // Codex and Kimi report input/output and no total; a zero total next to a
+  // six-figure input reads as "nothing happened".
+  await manager.record({ agent: "codex", model: "gpt-test", runId: "run-1", usage: { input_tokens: 368124, output_tokens: 3686 } });
+  const status = await manager.status();
+  assert.equal(status.totals.tokens.total, 371810);
+});
+
+test("a total the agent does report wins over the derived one", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
+  const manager = createUsageManager({ dataDir, now: () => new Date("2026-08-10T12:00:00Z") });
+  await manager.record({ agent: "ollama", model: "local", usage: { input_tokens: 10, output_tokens: 5, total_tokens: 99 } });
+  const status = await manager.status();
+  assert.equal(status.totals.tokens.total, 99);
+});
+
 test("compacts stale ledger entries into rollups without changing reported totals", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
   const clock = { value: new Date("2026-01-01T12:00:00Z") };

@@ -102,7 +102,7 @@ export function createCodexAdapter({ defaultModel, defaultMode, log, timeoutMs =
             }
             break;
           case "turn.completed":
-            out.usage = ev.usage;
+            out.usage = normalizeCodexUsage(ev.usage);
             break;
           case "turn.failed":
             out.stopReason = "error";
@@ -243,10 +243,30 @@ export function absorbItem(out, item, errors, maxOutputBytes) {
   }
 }
 
+/**
+ * Codex names its cache and reasoning counters differently from every other
+ * agent (`cached_input_tokens`, `cache_write_input_tokens`,
+ * `reasoning_output_tokens`), so the shared usage normalizer never recognised
+ * them and the ledger recorded nulls. Translate here, where the codex shape is
+ * already known, rather than teaching the generic normalizer one vendor's names.
+ */
+export function normalizeCodexUsage(usage) {
+  if (!usage || typeof usage !== "object") return usage ?? null;
+  return {
+    inputTokens: usage.input_tokens ?? null,
+    outputTokens: usage.output_tokens ?? null,
+    thoughtTokens: usage.reasoning_output_tokens ?? null,
+    cachedReadTokens: usage.cached_input_tokens ?? null,
+    cachedWriteTokens: usage.cache_write_input_tokens ?? null,
+    totalTokens: usage.total_tokens ?? null
+  };
+}
+
 export function normalizeCodexEvent(event) {
   if (event.type === "thread.started") return { type: "agent.started" };
   if (event.type === "turn.started") return { type: "agent.turn_started" };
-  if (event.type === "turn.completed") return { type: "agent.turn_completed", usage: event.usage };
+  if (event.type === "turn.completed")
+    return { type: "agent.turn_completed", usage: normalizeCodexUsage(event.usage) };
   if (event.type === "turn.failed") return { type: "agent.turn_failed", error: event.error?.message };
 
   const item = event.item;

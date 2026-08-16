@@ -357,13 +357,19 @@ async function readLedger(file) {
   }
 }
 function normalizeUsage(usage) {
+  const inputTokens = usage.inputTokens ?? usage.input_tokens ?? null;
+  const outputTokens = usage.outputTokens ?? usage.output_tokens ?? null;
+  const reported = usage.totalTokens ?? usage.total_tokens ?? null;
   return {
-    inputTokens: usage.inputTokens ?? usage.input_tokens ?? null,
-    outputTokens: usage.outputTokens ?? usage.output_tokens ?? null,
+    inputTokens,
+    outputTokens,
     thoughtTokens: usage.thoughtTokens ?? usage.thought_tokens ?? null,
     cachedReadTokens: usage.cachedReadTokens ?? usage.cached_read_tokens ?? null,
     cachedWriteTokens: usage.cachedWriteTokens ?? usage.cached_write_tokens ?? null,
-    totalTokens: usage.totalTokens ?? usage.total_tokens ?? null
+    // Most agents report the parts and leave the sum out; reporting a zero total
+    // next to a six-figure input reads as "no usage", which is worse than a
+    // derived figure. A total the agent does report always wins.
+    totalTokens: reported ?? (inputTokens === null && outputTokens === null ? null : (inputTokens ?? 0) + (outputTokens ?? 0))
   };
 }
 function emptyTotals() { return { runs: 0, tokens: { input: 0, output: 0, thought: 0, cachedRead: 0, cachedWrite: 0, total: 0 }, cost: { amount: null, currency: null, source: "unavailable" } }; }
