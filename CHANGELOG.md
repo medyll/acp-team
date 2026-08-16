@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.6] - 2026-08-16
+**Other:**
+- Fix Codex Windows sandbox package resolution (#1)
+
+
+
 ## [Unreleased]
 **Features:**
 - `agent_watch` accepts `until: "terminal"` to wait for a run to finish instead of returning on every event
