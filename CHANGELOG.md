@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.0.7] - 2026-08-17
+**Features:**
+- let agent_watch wait for a run to finish
+- add governed LLM operations
+- bound usage ledger and configuration history growth
+- bound agent concurrency and journal run lifecycle
+- harden agent transports and add an explicit security policy
+- add extensible LLM control CLI
+
+**Bug Fixes:**
+- use complete Windows package
+- record the token counters codex actually reports
+- lock authorization store
+- consume fan-out authorization as one transaction
+- authorize a whole fan-out before starting any of it
+- refuse prototype-chain keys on every configuration path
+- remove unsandboxed agent mode
+
+**Refactoring:**
+- split the tool surface and add fan-out delegation
+
+**Tests:**
+- keep unref timeout cases alive
+- keep timeout test alive
+- cover the adapter, registry and terminal layers, and add linting
+
+
+
 ## [Unreleased]
 **Features:**
 - `agent_watch` accepts `until: "terminal"` to wait for a run to finish instead of returning on every event
