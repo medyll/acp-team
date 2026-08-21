@@ -1,6 +1,6 @@
 {
   "name": "@medyll/acp-team",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "type": "module",
   "description": "Extensible MCP control plane for supervising heterogeneous LLM agents through one interface.",
   "keywords": [

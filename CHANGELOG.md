@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.10] - 2026-08-21
+**Features:**
+- report live agent progress
+
+
+
 ## [1.0.9] - 2026-08-21
 **Features:**
 - default to core tool surface
