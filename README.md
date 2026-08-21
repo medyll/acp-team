@@ -99,6 +99,13 @@ acp-team authorize revoke <authorization-id>
 Only the token hash is stored. Tokens expire, have a bounded use count and
 cannot be reused for another agent, directory or mode.
 
+`grant` asks for confirmation before it issues a token. Add `--yes` to skip the
+prompt in a script or CI job; without it a non-interactive run fails instead of
+issuing nothing. `--cwd` scopes the token to the directory the agent works in
+and does not move the token store, which stays with the bridge — override it
+with `--data-dir` or `AGENT_BRIDGE_DATA_DIR` only when the MCP server reads a
+different one.
+
 `--agent '*'` grants across agents, which is what `agent_fanout` needs in a
 write-capable mode: every agent in the fan-out consumes one use, so give the
 token at least as many uses as there are agents. The fan-out is authorized as a
@@ -392,13 +399,13 @@ every session, so conversation state lives inside the agent. Supports `thinking`
 and `agent_cancel`. Authentication is Kimi's own OAuth: the bridge never sees a
 credential, and an expired token means running `kimi login` again.
 
-**codex** — OpenAI Codex CLI, verified against `0.145.0`. Codex has no ACP
+**codex** — OpenAI Codex CLI, verified against `0.147.0`. Codex has no ACP
 support, so the adapter drives `codex exec --json`, one process per turn, and
 resumes conversations by thread id. Consequently there is no `thinking`
 parameter, and `mode` selects a sandbox policy rather than an approval policy,
 because `exec` is non-interactive and nobody is there to approve anything.
 
-**opencode** — OpenCode CLI over native ACP, verified against `1.17.11`,
+**opencode** — OpenCode CLI over native ACP, verified against `1.18.19`,
 protocol `1`. One long-lived `opencode acp` process backs its sessions. Bridge
 modes `default` and `auto` map to OpenCode's `build` mode; `plan` maps
 to `plan`. Models come from the providers configured by `opencode auth login`.
