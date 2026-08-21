@@ -22,7 +22,11 @@ export async function main(argv, terminal = createTerminal()) {
   if (["version", "--version", "-v"].includes(command)) return terminal.log("acp-team 1.0.5");
 
   const cwd = path.resolve(options.cwd || process.env.AGENT_BRIDGE_CWD || process.cwd());
-  const dataDir = path.resolve(options["data-dir"] || process.env.AGENT_BRIDGE_DATA_DIR || path.join(cwd, ".acp-team"));
+  // The store lives with the bridge, not with the directory an agent is scoped to:
+  // `--cwd` moves the agent's working directory only, so a token granted for another
+  // project still lands in the store the MCP server reads.
+  const bridgeDir = path.resolve(process.env.AGENT_BRIDGE_CWD || process.cwd());
+  const dataDir = path.resolve(options["data-dir"] || process.env.AGENT_BRIDGE_DATA_DIR || path.join(bridgeDir, ".acp-team"));
   const log = (message) => options.verbose && terminal.phase(message);
   const configManager = createConfigManager({ dataDir });
   const runtimeConfig = ["config", "authorize", "run"].includes(command)
@@ -209,6 +213,7 @@ async function runAuthorize({ subcommand = "list", args, options, cwd, authoriza
   }
   if (subcommand !== "grant") throw new Error("Authorize commands: grant, list, revoke");
   if (!options.agent) throw new Error("authorize grant requires --agent <agent>");
+  if (!options.yes && !terminal.interactive) throw new Error("authorize grant requires --yes in a non-interactive terminal");
   const approved = options.yes || await terminal.confirm(`Autoriser ${options.agent} à écrire dans ${cwd} ?`, false);
   if (!approved) return terminal.log("Autorisation non créée.");
   const issued = await authorizationManager.issue({
