@@ -8,13 +8,25 @@ export function jsonResult(value) {
   return textResult(JSON.stringify(value, null, 2));
 }
 
-export function render({ agent, result, includeThoughts }) {
+export function render({ agent, result, includeThoughts, returnMode = "summary" }) {
   const body = result.text.trim() || `(${agent} returned no text)`;
-  const tools = result.toolCalls.length
-    ? `\n\n---\n${agent} tool calls:\n${result.toolCalls.map((t) => `- [${t.status}] ${t.title}`).join("\n")}`
-    : "";
+  const full = includeThoughts || returnMode === "full";
+  const tools = renderToolCalls(agent, result.toolCalls, full);
   const thoughts = includeThoughts && result.thoughts ? `\n\n---\n${agent} thoughts:\n${result.thoughts}` : "";
   return `${body}${tools}${thoughts}\n\n(agent: ${agent}, session: ${result.sessionId}, stop: ${result.stopReason})`;
+}
+
+function renderToolCalls(agent, toolCalls, full) {
+  if (!toolCalls.length) return "";
+  if (full) {
+    return `\n\n---\n${agent} tool calls:\n${toolCalls.map((t) => `- [${t.status}] ${t.title}`).join("\n")}`;
+  }
+  const counts = new Map();
+  for (const toolCall of toolCalls) {
+    const status = toolCall.status || "unknown";
+    counts.set(status, (counts.get(status) ?? 0) + 1);
+  }
+  return `\n\n---\n${agent} tool calls: ${[...counts].map(([status, count]) => `${status}=${count}`).join(", ")}`;
 }
 
 /**

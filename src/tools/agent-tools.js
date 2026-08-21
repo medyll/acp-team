@@ -37,6 +37,7 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
         "Delegate a task to another coding agent. The agent runs its own tools — file reads/writes, shell — inside the given working directory, and returns its final answer plus a summary of what it ran. Conversation state is kept per agent per working directory unless session_id or new_session is given.",
       inputSchema: {
         ...shape,
+        return: z.enum(["summary", "full"]).default("summary").describe("Return the compact tool-call summary or the full tool-call list."),
         include_thoughts: z.boolean().optional().describe("Include the agent's reasoning stream in the output.")
       }
     },
@@ -57,7 +58,14 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
         onEvent: progressReporter(extra, log)
       });
       await usageManager.record({ agent: input.agent, model: input.model, sessionId: result.sessionId, usage: result.usage, cost: result.cost, outcome: "completed", latencyMs: Date.now() - startedAt });
-      return textResult(render({ agent: input.agent, result, includeThoughts: input.include_thoughts }));
+      return textResult(
+        render({
+          agent: input.agent,
+          result,
+          includeThoughts: input.include_thoughts,
+          returnMode: input.include_thoughts ? "full" : input.return ?? "summary"
+        })
+      );
     }
   );
 
