@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.8] - 2026-08-21
+**Bug Fixes:**
+- keep the authorization store with the bridge (#3)
+
+
+
 ## [1.0.7] - 2026-08-17
 **Features:**
 - let agent_watch wait for a run to finish
