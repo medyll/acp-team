@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.9] - 2026-08-21
+**Features:**
+- default to core tool surface
+- summarize synchronous agent runs
+
+**Bug Fixes:**
+- scope clients to working directory
+
+
+
 ## [1.0.8] - 2026-08-21
 **Bug Fixes:**
 - keep the authorization store with the bridge (#3)
