@@ -26,6 +26,7 @@ export class AcpClient {
     permissionPolicy = "allow",
     requestTimeoutMs = 10 * 60_000,
     maxOutputBytes = 4 * 1024 * 1024,
+    cwd = process.cwd(),
     onLog = () => {}
   } = {}) {
     if (!command) throw new Error("ACP client command is required");
@@ -39,6 +40,7 @@ export class AcpClient {
     this.permissionPolicy = permissionPolicy;
     this.requestTimeoutMs = requestTimeoutMs;
     this.maxOutputBytes = maxOutputBytes;
+    this.cwd = cwd;
     this.onLog = onLog;
     this.proc = null;
     this.rl = null;
@@ -60,6 +62,7 @@ export class AcpClient {
   async #start() {
     this.stopping = false;
     this.proc = spawn(this.command, this.args, {
+      cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       shell: this.shell,
       windowsHide: true
@@ -204,7 +207,7 @@ export class AcpClient {
   async newSession({ cwd, mcpServers = [], model, mode, thinking } = {}) {
     await this.start();
     const res = await this.request("session/new", {
-      cwd: cwd || process.cwd(),
+      cwd: cwd || this.cwd,
       mcpServers
     });
     this.sessions.set(res.sessionId, { collectors: new Set(), cwd, configOptions: [] });
