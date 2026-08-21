@@ -3,6 +3,10 @@ import { randomUUID } from "node:crypto";
 const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
 const ACTIVE_STATES = new Set(["running", "cancelling"]);
 const DEFAULT_MAX_CONCURRENT_PER_AGENT = 2;
+const DEFAULT_HEARTBEAT_MS = 10_000;
+const DEFAULT_QUIET_AFTER_MS = 30_000;
+const DEFAULT_STALLED_AFTER_MS = 90_000;
+const MESSAGE_PREVIEW_LIMIT = 500;
 
 /**
  * Keep delegated turns observable and controllable independently from the MCP
@@ -16,6 +20,10 @@ export function createRunManager({
   maxEvents = 500,
   maxRuns = 200,
   maxConcurrentPerAgent = DEFAULT_MAX_CONCURRENT_PER_AGENT,
+  heartbeatMs = DEFAULT_HEARTBEAT_MS,
+  quietAfterMs = DEFAULT_QUIET_AFTER_MS,
+  stalledAfterMs = DEFAULT_STALLED_AFTER_MS,
+  now = Date.now,
   journal
 }) {
   const runs = new Map();
@@ -50,10 +58,11 @@ export function createRunManager({
   function append(run, type, data = {}) {
     const event = {
       seq: ++run.lastEvent,
-      at: new Date().toISOString(),
+      at: new Date(now()).toISOString(),
       type,
       ...data
     };
+    observe(run, event);
     run.events.push(event);
     if (run.events.length > maxEvents) run.events.splice(0, run.events.length - maxEvents);
     if (type.startsWith("run.")) record(run, event);
@@ -63,6 +72,7 @@ export function createRunManager({
   }
 
   function publicRun(run, { afterEvent = 0, includeEvents = true } = {}) {
+    const timing = timingFor(run);
     return {
       runId: run.runId,
       agent: run.agent,
@@ -72,6 +82,16 @@ export function createRunManager({
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,
       lastEvent: run.lastEvent,
+      lastActivityAt: run.lastActivityAt,
+      health: healthFor(run, timing.idleMs),
+      phase: phaseFor(run),
+      elapsedMs: timing.elapsedMs,
+      queueMs: timing.queueMs,
+      activeMs: timing.activeMs,
+      idleMs: timing.idleMs,
+      lastMessage: run.lastMessage,
+      currentTool: currentToolFor(run),
+      toolCalls: toolCountsFor(run),
       ...(includeEvents ? { events: run.events.filter((event) => event.seq > afterEvent) } : {}),
       ...(run.result ? { result: run.result } : {}),
       ...(run.error ? { error: run.error } : {})
@@ -97,11 +117,16 @@ export function createRunManager({
       agent,
       status: "queued",
       sessionId: askOptions.sessionId ?? null,
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(now()).toISOString(),
       startedAt: null,
       finishedAt: null,
+      lastActivityAt: null,
+      phase: "queued",
+      lastMessage: null,
       lastEvent: 0,
       events: [],
+      tools: new Map(),
+      heartbeatTimer: null,
       result: null,
       error: null,
       controller,
@@ -140,8 +165,9 @@ export function createRunManager({
     const { agent, askOptions, controller } = run;
     const adapter = registry.get(agent);
     run.status = "running";
-    run.startedAt = new Date().toISOString();
+    run.startedAt = new Date(now()).toISOString();
     append(run, "run.admitted");
+    startHeartbeat(run);
 
     // Deliberately detach execution from the MCP call that created the run.
     run.promise = Promise.resolve().then(async () => {
@@ -157,14 +183,16 @@ export function createRunManager({
 
         if (controller.signal.aborted) {
           run.status = "cancelled";
-          run.finishedAt = new Date().toISOString();
+          run.finishedAt = new Date(now()).toISOString();
+          clearHeartbeat(run);
           append(run, "run.cancelled");
         } else {
           run.status = "completed";
           run.sessionId = result.sessionId ?? run.sessionId;
           const { thoughts: _privateThoughts, ...publicResult } = result;
           run.result = publicResult;
-          run.finishedAt = new Date().toISOString();
+          run.finishedAt = new Date(now()).toISOString();
+          clearHeartbeat(run);
           await usageManager?.record({
             agent: run.agent,
             model: askOptions.model,
@@ -180,12 +208,14 @@ export function createRunManager({
       } catch (error) {
         if (controller.signal.aborted || error?.name === "AbortError") {
           run.status = "cancelled";
-          run.finishedAt = new Date().toISOString();
+          run.finishedAt = new Date(now()).toISOString();
+          clearHeartbeat(run);
           append(run, "run.cancelled");
         } else {
           run.status = "failed";
           run.error = { name: error?.name ?? "Error", message: error?.message ?? String(error) };
-          run.finishedAt = new Date().toISOString();
+          run.finishedAt = new Date(now()).toISOString();
+          clearHeartbeat(run);
           await usageManager?.record({
             agent: run.agent,
             model: askOptions.model,
@@ -209,7 +239,7 @@ export function createRunManager({
    * costs one round trip instead of one per event; the mandator still gets every
    * event it has not seen yet in the reply. Both are bounded by waitMs.
    */
-  async function watch(runId, { afterEvent = 0, waitMs = 0, until = "event" } = {}) {
+  async function watch(runId, { afterEvent = 0, waitMs = 0, until = "event", includeEvents = true } = {}) {
     const run = get(runId);
     const deadline = Date.now() + waitMs;
     while (waitMs > 0 && !TERMINAL_STATES.has(run.status)) {
@@ -226,7 +256,7 @@ export function createRunManager({
         run.waiters.add(done);
       });
     }
-    return publicRun(run, { afterEvent });
+    return publicRun(run, { afterEvent, includeEvents });
   }
 
   function stop(runId) {
@@ -242,19 +272,20 @@ export function createRunManager({
       queue.splice(waitingAt, 1);
       run.controller.abort(new Error("Stopped by mandator"));
       run.status = "cancelled";
-      run.finishedAt = new Date().toISOString();
+      run.finishedAt = new Date(now()).toISOString();
       append(run, "run.cancelled");
       return publicRun(run);
     }
 
     run.status = "cancelling";
+    clearHeartbeat(run);
     run.controller.abort(new Error("Stopped by mandator"));
     return publicRun(run);
   }
 
-  function list({ agent } = {}) {
+  function list({ agent, activeOnly = false } = {}) {
     return [...runs.values()]
-      .filter((run) => !agent || run.agent === agent)
+      .filter((run) => (!agent || run.agent === agent) && (!activeOnly || !TERMINAL_STATES.has(run.status)))
       .map((run) => publicRun(run, { includeEvents: false }));
   }
 
@@ -293,6 +324,98 @@ export function createRunManager({
       waiting: pending.get(agent)?.length ?? 0,
       limit: concurrencyLimit(agent)
     }));
+  }
+
+  function startHeartbeat(run) {
+    if (!Number.isFinite(heartbeatMs) || heartbeatMs <= 0) return;
+    run.heartbeatTimer = setInterval(() => {
+      if (run.status !== "running") return clearHeartbeat(run);
+      const timing = timingFor(run);
+      append(run, "agent.heartbeat", {
+        elapsedMs: timing.elapsedMs,
+        idleMs: timing.idleMs,
+        health: healthFor(run, timing.idleMs),
+        phase: phaseFor(run)
+      });
+    }, heartbeatMs);
+    run.heartbeatTimer.unref?.();
+  }
+
+  function clearHeartbeat(run) {
+    if (run.heartbeatTimer) clearInterval(run.heartbeatTimer);
+    run.heartbeatTimer = null;
+  }
+
+  function observe(run, event) {
+    if (event.type === "agent.heartbeat") return;
+    run.lastActivityAt = event.at;
+
+    if (event.type === "message.delta" && event.text) {
+      run.lastMessage = `${run.lastMessage ?? ""}${event.text}`.slice(-MESSAGE_PREVIEW_LIMIT);
+      run.phase = "message";
+    } else if (event.type === "thought.updated") {
+      run.phase = "thinking";
+    } else if (event.type === "session.started") {
+      run.phase = "session";
+    } else if (event.type === "usage.updated") {
+      run.phase = "usage";
+    }
+
+    if (event.type === "tool.started" || event.type === "tool.updated") {
+      const key = event.toolCallId ?? event.title ?? `tool-${event.seq}`;
+      const previous = run.tools.get(key) ?? {};
+      run.tools.set(key, {
+        toolCallId: event.toolCallId ?? previous.toolCallId,
+        title: event.title ?? previous.title ?? "Unknown tool",
+        status: event.status ?? previous.status ?? "running"
+      });
+      run.phase = currentToolFor(run) ? "tool" : "running";
+    }
+
+    if (event.type === "run.queued" || event.type === "run.waiting") run.phase = "queued";
+    if (event.type === "run.admitted" || event.type === "turn.started") run.phase = "running";
+    if (event.type === "run.stop_requested") run.phase = "cancelling";
+  }
+
+  function timingFor(run) {
+    const current = now();
+    const created = Date.parse(run.createdAt);
+    const started = run.startedAt ? Date.parse(run.startedAt) : null;
+    const finished = run.finishedAt ? Date.parse(run.finishedAt) : null;
+    const end = finished ?? current;
+    const lastActivity = run.lastActivityAt ? Date.parse(run.lastActivityAt) : created;
+    return {
+      elapsedMs: Math.max(0, end - created),
+      queueMs: Math.max(0, (started ?? end) - created),
+      activeMs: started === null ? 0 : Math.max(0, end - started),
+      idleMs: Math.max(0, end - lastActivity)
+    };
+  }
+
+  function healthFor(run, idleMs) {
+    if (TERMINAL_STATES.has(run.status)) return run.status;
+    if (run.status === "queued") return "queued";
+    if (run.status === "cancelling") return "cancelling";
+    if (idleMs >= stalledAfterMs) return "stalled";
+    if (idleMs >= quietAfterMs) return "quiet";
+    return "active";
+  }
+
+  function phaseFor(run) {
+    if (TERMINAL_STATES.has(run.status)) return run.status;
+    if (run.status === "cancelling") return "cancelling";
+    if (run.status === "queued") return "queued";
+    return currentToolFor(run) ? "tool" : run.phase;
+  }
+
+  function currentToolFor(run) {
+    return [...run.tools.values()].find((tool) => ["running", "pending", "in_progress"].includes(tool.status)) ?? null;
+  }
+
+  function toolCountsFor(run) {
+    const counts = {};
+    for (const tool of run.tools.values()) counts[tool.status] = (counts[tool.status] ?? 0) + 1;
+    return counts;
   }
 
   return { start, watch, stop, list, show, retry, retryScope, stopAll, capacity };

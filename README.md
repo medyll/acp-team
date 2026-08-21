@@ -263,7 +263,7 @@ Continue an earlier conversation explicitly:
 | Tool | Purpose |
 | --- | --- |
 | `agent_start` | Start a supervised turn and return a `run_id` immediately |
-| `agent_watch` | Read status and new events; supports bounded long-polling with `after_event`, `wait_ms` and `until` |
+| `agent_watch` | Read a compact live report with elapsed/queue/active/idle time, health, phase, latest message and tool counts; pass `return: "events"` for new events |
 | `agent_stop` | Stop a waiting, queued or running turn by `run_id`, even before a session id exists |
 | `agent_fanout` | Send one prompt to several agents as independent runs, to compare their answers |
 | `agent_ask` | Blocking compatibility API; now emits MCP progress notifications and honors request cancellation |
@@ -295,13 +295,16 @@ Continue an earlier conversation explicitly:
 For interactive delegation, prefer this control loop:
 
 1. Call `agent_start` and keep its `runId`.
-2. Call `agent_watch` with the last received event sequence in `after_event`.
+2. Call `agent_watch` for a compact report; pass the last sequence in `after_event` and `return: "events"` when the event stream is needed.
 3. Call `agent_stop` whenever the work should end.
 
-`agent_watch` settles on the first new event by default, which is what tailing a run
-needs. When only the outcome matters, pass `until: "terminal"`: the call then waits for
-the run to finish (still bounded by `wait_ms`) and returns every unseen event at once,
-instead of costing one round trip per event on a chatty run.
+`agent_watch` returns a compact summary by default. Reports distinguish total elapsed,
+queue, active and idle time, classify health as `active`, `quiet` or `stalled`, and show
+the current phase, latest visible message and tool counts. Active runs emit a lightweight
+heartbeat every ten seconds, so bounded long-polling still returns while an agent is
+temporarily silent. Pass `return: "events"` to receive unseen events after `after_event`.
+When only the outcome matters, pass `until: "terminal"`: the call then waits for the run
+to finish, still bounded by `wait_ms`.
 
 Observable events include session creation, visible assistant text, plans, tool calls,
 commands and file changes. Private reasoning payloads are deliberately not exposed.

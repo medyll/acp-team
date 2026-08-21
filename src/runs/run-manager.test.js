@@ -219,3 +219,90 @@ test("retries a retained finished run as a fresh session", async () => {
   assert.equal(calls[1].newSession, true);
   assert.equal(calls[1].prompt, "work");
 });
+
+test("reports elapsed time, health, visible messages and tool activity", async () => {
+  let clock = 0;
+  let release;
+  let emit;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const adapter = {
+    async ask({ onEvent }) {
+      emit = onEvent;
+      onEvent({ type: "turn.started" });
+      onEvent({ type: "message.delta", text: "Inspecting " });
+      onEvent({ type: "message.delta", text: "the run manager." });
+      onEvent({ type: "tool.started", toolCallId: "tool-1", title: "Read files", status: "running" });
+      await gate;
+      return { sessionId: "s-1", text: "done", thoughts: "", toolCalls: [], stopReason: "end_turn" };
+    }
+  };
+  const manager = createRunManager({
+    registry: registryFor(adapter),
+    heartbeatMs: 0,
+    quietAfterMs: 20_000,
+    stalledAfterMs: 60_000,
+    now: () => clock
+  });
+  const run = manager.start({ agent: "fake", prompt: "work" });
+  await delay(0);
+
+  clock = 15_000;
+  const active = await manager.watch(run.runId, { includeEvents: false });
+  assert.equal(active.elapsedMs, 15_000);
+  assert.equal(active.queueMs, 0);
+  assert.equal(active.activeMs, 15_000);
+  assert.equal(active.idleMs, 15_000);
+  assert.equal(active.health, "active");
+  assert.equal(active.phase, "tool");
+  assert.equal(active.lastMessage, "Inspecting the run manager.");
+  assert.deepEqual(active.currentTool, { toolCallId: "tool-1", title: "Read files", status: "running" });
+  assert.deepEqual(active.toolCalls, { running: 1 });
+  assert.equal("events" in active, false);
+
+  clock = 25_000;
+  assert.equal((await manager.watch(run.runId, { includeEvents: false })).health, "quiet");
+  clock = 65_000;
+  assert.equal((await manager.watch(run.runId, { includeEvents: false })).health, "stalled");
+
+  emit({ type: "tool.updated", toolCallId: "tool-1", status: "completed" });
+  const resumed = await manager.watch(run.runId, { includeEvents: false });
+  assert.equal(resumed.health, "active");
+  assert.equal(resumed.currentTool, null);
+  assert.deepEqual(resumed.toolCalls, { completed: 1 });
+  release();
+  await manager.watch(run.runId, { afterEvent: resumed.lastEvent, waitMs: 100 });
+});
+
+test("emits bounded heartbeats while a supervised run is active", async () => {
+  const adapter = {
+    async ask({ signal }) {
+      await new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }
+  };
+  const manager = createRunManager({ registry: registryFor(adapter), heartbeatMs: 5 });
+  const run = manager.start({ agent: "fake", prompt: "work" });
+  const heartbeat = await manager.watch(run.runId, { afterEvent: run.lastEvent, waitMs: 40 });
+
+  assert.ok(heartbeat.events.some((event) => event.type === "agent.heartbeat"));
+  assert.equal(heartbeat.status, "running");
+  manager.stop(run.runId);
+  await manager.watch(run.runId, { afterEvent: heartbeat.lastEvent, waitMs: 100 });
+});
+
+test("can list only non-terminal runs for aggregate status", async () => {
+  const adapter = {
+    async ask() {
+      return { sessionId: "s-1", text: "done", thoughts: "", toolCalls: [], stopReason: "end_turn" };
+    }
+  };
+  const manager = createRunManager({ registry: registryFor(adapter), heartbeatMs: 0 });
+  manager.start({ agent: "fake", prompt: "work" });
+  await delay(0);
+
+  assert.equal(manager.list().length, 1);
+  assert.equal(manager.list({ activeOnly: true }).length, 0);
+});
