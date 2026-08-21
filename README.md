@@ -424,6 +424,7 @@ operations are deliberately not exposed.
 | `AGENT_BRIDGE_CWD` | process cwd | Working directory for new sessions. Leave unset; the default already follows the host session |
 | `AGENT_BRIDGE_DATA_DIR` | `.acp-team/` under bridge cwd | Private local usage ledger, run journal and budget configuration |
 | `AGENT_BRIDGE_MAX_CONCURRENT` | `2` | Maximum turns running at once **per agent**; further runs wait for a slot |
+| `ACP_TEAM_TOOLS` | `core` | MCP tool surface: `core` exposes the 11 delegation/run tools; `full` also exposes configuration, usage/model/budget, Ollama and doctor tools |
 | `ACP_TEAM_LOG_LEVEL` | `info` | Diagnostic verbosity on stderr: `error`, `warn`, `info` or `debug` |
 | `ACP_TEAM_LOG_FORMAT` | `text` | Set to `json` for one structured log object per line |
 | `OPENROUTER_MANAGEMENT_KEY` | unset | Management key used only by `usage_sync` to read OpenRouter credits and catalog |
