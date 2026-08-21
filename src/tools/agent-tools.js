@@ -206,20 +206,22 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
     {
       title: "Watch a supervised agent run",
       description:
-        "Return a run's state and events. Pass after_event to receive only newer events; wait_ms enables bounded long-polling. until='event' (default) returns on the first new event, until='terminal' waits for the run to finish — use it to avoid one round trip per event on a chatty run.",
+        "Return a compact progress report for a run: elapsed, queue, active and idle time, health, phase, last visible message and tool counts. Pass return='events' for the underlying event stream. wait_ms enables bounded long-polling.",
       inputSchema: {
         run_id: z.string(),
         after_event: z.number().int().nonnegative().optional(),
         wait_ms: z.number().int().min(0).max(30_000).optional(),
-        until: z.enum(["event", "terminal"]).optional()
+        until: z.enum(["event", "terminal"]).optional(),
+        return: z.enum(["summary", "events"]).default("summary")
       }
     },
-    async ({ run_id, after_event, wait_ms, until }) =>
+    async ({ run_id, after_event, wait_ms, until, return: returnMode }) =>
       jsonResult(
         await runManager.watch(run_id, {
           afterEvent: after_event ?? 0,
           waitMs: wait_ms ?? 0,
-          until: until ?? "event"
+          until: until ?? "event",
+          includeEvents: returnMode === "events"
         })
       )
   );
@@ -261,7 +263,7 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
           report[a.id] = { error: e.message };
         }
       }
-      return jsonResult({ bridgeCwd: defaultCwd, agents: report, runs: runManager.list({ agent }), capacity: runManager.capacity() });
+      return jsonResult({ bridgeCwd: defaultCwd, agents: report, runs: runManager.list({ agent, activeOnly: true }), capacity: runManager.capacity() });
     }
   );
 

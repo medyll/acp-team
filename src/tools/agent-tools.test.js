@@ -3,7 +3,7 @@ import test from "node:test";
 import { registerAgentTools } from "./agent-tools.js";
 
 /** Captures the handlers registerAgentTools registers, so they can be called directly. */
-function harness({ consume, start, ask } = {}) {
+function harness({ consume, start, ask, watch, list } = {}) {
   const handlers = new Map();
   const server = { registerTool: (name, _config, handler) => handlers.set(name, handler) };
   const started = [];
@@ -16,7 +16,12 @@ function harness({ consume, start, ask } = {}) {
         return start?.(options) ?? { runId: `run-${started.length}`, status: "running", events: [] };
       },
       capacity: () => [],
-      list: () => []
+      list(options) {
+        return list?.(options) ?? [];
+      },
+      watch(runId, options) {
+        return watch?.(runId, options) ?? { runId, status: "running" };
+      }
     },
     usageManager: { record: async () => {} },
     authorizationManager: {
@@ -152,4 +157,33 @@ test("agent_ask include_thoughts implies a full response", async () => {
 
   assert.match(text, /- \[completed\] Read alpha/);
   assert.match(text, /kimi thoughts:\nprivate reasoning/);
+});
+
+test("agent_watch returns a compact report by default and events on request", async () => {
+  const calls = [];
+  const { call } = harness({
+    watch: (runId, options) => {
+      calls.push([runId, options]);
+      return { runId, status: "running", elapsedMs: 12_000, ...(options.includeEvents ? { events: [] } : {}) };
+    }
+  });
+
+  const summary = JSON.parse((await call("agent_watch", { run_id: "run-1" })).content[0].text);
+  const events = JSON.parse((await call("agent_watch", { run_id: "run-1", return: "events" })).content[0].text);
+
+  assert.equal("events" in summary, false);
+  assert.deepEqual(events.events, []);
+  assert.deepEqual(calls, [
+    ["run-1", { afterEvent: 0, waitMs: 0, until: "event", includeEvents: false }],
+    ["run-1", { afterEvent: 0, waitMs: 0, until: "event", includeEvents: true }]
+  ]);
+});
+
+test("agent_status requests only active run summaries", async () => {
+  const listCalls = [];
+  const { call } = harness({ list: (options) => (listCalls.push(options), []) });
+
+  await call("agent_status", {});
+
+  assert.deepEqual(listCalls, [{ agent: undefined, activeOnly: true }]);
 });
