@@ -3,13 +3,13 @@ import test from "node:test";
 import { registerAgentTools } from "./agent-tools.js";
 
 /** Captures the handlers registerAgentTools registers, so they can be called directly. */
-function harness({ consume, start } = {}) {
+function harness({ consume, start, ask } = {}) {
   const handlers = new Map();
   const server = { registerTool: (name, _config, handler) => handlers.set(name, handler) };
   const started = [];
   const consumed = [];
   registerAgentTools(server, {
-    registry: { ids: ["kimi", "codex"], get: () => ({ ask: async () => ({}) }), list: () => [] },
+    registry: { ids: ["kimi", "codex"], get: () => ({ ask: async (options) => ask?.(options) ?? {} }), list: () => [] },
     runManager: {
       start(options) {
         started.push(options);
@@ -105,4 +105,51 @@ test("an unsupported mode is refused before any authorization is spent", async (
   await assert.rejects(call("agent_start", { agent: "codex", prompt: "go", mode: "yolo" }), /Unsupported agent mode/);
   assert.equal(consumed.length, 0);
   assert.equal(started.length, 0);
+});
+
+const askResult = {
+  sessionId: "session-1",
+  text: "Done",
+  thoughts: "private reasoning",
+  toolCalls: [
+    { status: "completed", title: "Read alpha" },
+    { status: "completed", title: "Read beta" },
+    { status: "failed", title: "Run gamma" }
+  ],
+  stopReason: "end_turn"
+};
+
+test("agent_ask defaults to a compact tool-call summary", async () => {
+  const { call } = harness({ ask: async () => askResult });
+  const response = await call("agent_ask", { agent: "kimi", prompt: "inspect", mode: "plan" });
+  const text = response.content[0].text;
+
+  assert.match(text, /kimi tool calls: completed=2, failed=1/);
+  assert.doesNotMatch(text, /Read alpha|Read beta|Run gamma|private reasoning/);
+  assert.match(text, /\(agent: kimi, session: session-1, stop: end_turn\)$/);
+});
+
+test("agent_ask return full preserves the detailed tool-call list", async () => {
+  const { call } = harness({ ask: async () => askResult });
+  const response = await call("agent_ask", { agent: "kimi", prompt: "inspect", mode: "plan", return: "full" });
+  const text = response.content[0].text;
+
+  assert.match(text, /- \[completed\] Read alpha/);
+  assert.match(text, /- \[failed\] Run gamma/);
+  assert.doesNotMatch(text, /private reasoning/);
+});
+
+test("agent_ask include_thoughts implies a full response", async () => {
+  const { call } = harness({ ask: async () => askResult });
+  const response = await call("agent_ask", {
+    agent: "kimi",
+    prompt: "inspect",
+    mode: "plan",
+    return: "summary",
+    include_thoughts: true
+  });
+  const text = response.content[0].text;
+
+  assert.match(text, /- \[completed\] Read alpha/);
+  assert.match(text, /kimi thoughts:\nprivate reasoning/);
 });

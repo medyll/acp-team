@@ -76,3 +76,53 @@ test("cancels a Kimi turn through its AbortSignal", async () => {
   await assert.rejects(turn, /cancelled by fake client/);
   assert.equal(cancelledSession, "kimi-session");
 });
+
+test("pools Kimi clients by cwd and routes status, cancel, and stop", async () => {
+  const created = [];
+  const cancelled = [];
+  const stopped = [];
+  const createClient = (cwd) => {
+    const clientNumber = created.length + 1;
+    const client = {
+      async start() {
+        return { protocolVersion: 1, agentInfo: { name: "fake-kimi" } };
+      },
+      async newSession() {
+        return {
+          sessionId: `session-${clientNumber}`,
+          configOptions: [{ id: "model", options: [{ value: "fake-model" }] }]
+        };
+      },
+      async prompt(sessionId, prompt) {
+        return { sessionId, text: prompt, thoughts: "", toolCalls: [], stopReason: "end_turn" };
+      },
+      cancel(sessionId) {
+        cancelled.push([cwd, sessionId]);
+      },
+      stop() {
+        stopped.push(cwd);
+      }
+    };
+    created.push([cwd, client]);
+    return client;
+  };
+  const kimi = createKimiAdapter({ createClient, log: () => {} });
+
+  const first = await kimi.ask({ cwd: "C:/project-a", prompt: "one" });
+  const sameCwd = await kimi.ask({ cwd: "C:/project-a", prompt: "two" });
+  const otherCwd = await kimi.ask({ cwd: "C:/project-b", prompt: "three" });
+
+  assert.deepEqual(created.map(([cwd]) => cwd), ["C:/project-a", "C:/project-b"]);
+  assert.equal(first.sessionId, sameCwd.sessionId);
+  assert.notEqual(first.sessionId, otherCwd.sessionId);
+  const status = await kimi.status();
+  assert.deepEqual(status.sessions, [
+    { cwd: "C:/project-a", sessionId: first.sessionId },
+    { cwd: "C:/project-b", sessionId: otherCwd.sessionId }
+  ]);
+
+  kimi.cancel(otherCwd.sessionId);
+  assert.deepEqual(cancelled, [["C:/project-b", otherCwd.sessionId]]);
+  kimi.stop();
+  assert.deepEqual(stopped.sort(), ["C:/project-a", "C:/project-b"]);
+});

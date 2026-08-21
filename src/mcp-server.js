@@ -18,6 +18,10 @@ import { registerSystemTools } from "./tools/system-tools.js";
 
 const DEFAULT_CWD = process.env.AGENT_BRIDGE_CWD || process.cwd();
 const DATA_DIR = process.env.AGENT_BRIDGE_DATA_DIR || path.join(DEFAULT_CWD, ".acp-team");
+const TOOLS_MODE = process.env.ACP_TEAM_TOOLS || "core";
+if (!["core", "full"].includes(TOOLS_MODE)) {
+  throw new Error(`ACP_TEAM_TOOLS must be "core" or "full" (received "${TOOLS_MODE}")`);
+}
 
 const log = createLogger({ name: "acp-team" });
 const configManager = createConfigManager({ dataDir: DATA_DIR });
@@ -42,10 +46,12 @@ const runManager = createRunManager({
 const server = new McpServer({ name: "acp-team", version: "1.0.0" });
 
 registerAgentTools(server, { registry, runManager, usageManager, authorizationManager, journal, defaultCwd: DEFAULT_CWD, log });
-registerUsageTools(server, { registry, usageManager });
-registerConfigTools(server, { configManager });
-if (registry.ids.includes("ollama")) registerOllamaTools(server, { registry, log });
-registerSystemTools(server, { configManager, registry, dataDir: DATA_DIR });
+if (TOOLS_MODE === "full") {
+  registerUsageTools(server, { registry, usageManager });
+  registerConfigTools(server, { configManager });
+  if (registry.ids.includes("ollama")) registerOllamaTools(server, { registry, log });
+  registerSystemTools(server, { configManager, registry, dataDir: DATA_DIR });
+}
 
 const shutdown = () => {
   runManager.stopAll();
@@ -56,4 +62,4 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 await server.connect(new StdioServerTransport());
-log.info("ready", { cwd: DEFAULT_CWD, agents: registry.ids });
+log.info("ready", { cwd: DEFAULT_CWD, agents: registry.ids, tools: TOOLS_MODE });

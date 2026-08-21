@@ -19,20 +19,21 @@ export function validateAgentDefinition(definition) {
 
 export function createDeclarativeAdapter(definition, { log, requestTimeoutMs } = {}) {
   validateAgentDefinition(definition);
-  const client = new AcpClient({
-    command: definition.command,
-    displayCommand: definition.command,
-    args: definition.args ?? ["acp"],
-    shell: false,
-    agentLabel: definition.name ?? definition.id,
-    permissionPolicy: definition.permission ?? "deny",
-    requestTimeoutMs,
-    onLog: log
-  });
   return createAcpAdapter({
     id: definition.id,
     description: definition.description ?? `Declarative ACP agent ${definition.id}`,
-    client,
+    createClient: (cwd) =>
+      new AcpClient({
+        command: definition.command,
+        displayCommand: definition.command,
+        args: definition.args ?? ["acp"],
+        shell: false,
+        agentLabel: definition.name ?? definition.id,
+        permissionPolicy: definition.permission ?? "deny",
+        requestTimeoutMs,
+        cwd,
+        onLog: log
+      }),
     defaultModel: definition.model,
     defaultMode: definition.mode ?? "plan",
     permissionPolicy: definition.permission ?? "deny",
