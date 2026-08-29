@@ -3,7 +3,7 @@ import test from "node:test";
 import { registerAgentTools } from "./agent-tools.js";
 
 /** Captures the handlers registerAgentTools registers, so they can be called directly. */
-function harness({ consume, start, ask, watch, list } = {}) {
+function harness({ consume, start, ask, watch, list, trustedCallerHosts } = {}) {
   const handlers = new Map();
   const server = { registerTool: (name, _config, handler) => handlers.set(name, handler) };
   const started = [];
@@ -39,6 +39,7 @@ function harness({ consume, start, ask, watch, list } = {}) {
       }
     },
     defaultCwd: "/work",
+    trustedCallerHosts,
     log: { warn: () => {} }
   });
   return { call: (name, input) => handlers.get(name)(input, {}), started, consumed };
@@ -110,6 +111,49 @@ test("an unsupported mode is refused before any authorization is spent", async (
   await assert.rejects(call("agent_start", { agent: "codex", prompt: "go", mode: "yolo" }), /Unsupported agent mode/);
   assert.equal(consumed.length, 0);
   assert.equal(started.length, 0);
+});
+
+test("a callee inherits a trusted write-capable caller without a token", async () => {
+  const { call, consumed, started } = harness({ trustedCallerHosts: new Set(["opencode"]) });
+  await call("agent_start", {
+    agent: "codex",
+    prompt: "fix",
+    caller_context: { host: "opencode", mode: "default", session_id: "session-1", cwd: "/work" }
+  });
+  assert.equal(consumed.length, 0);
+  assert.equal(started[0].mode, "default");
+});
+
+test("an explicit callee downgrade overrides inherited caller rights", async () => {
+  const { call, consumed, started } = harness({ trustedCallerHosts: new Set(["opencode"]) });
+  await call("agent_start", {
+    agent: "codex",
+    prompt: "inspect",
+    mode: "plan",
+    caller_context: { host: "opencode", mode: "default", session_id: "session-1", cwd: "/work" }
+  });
+  assert.equal(consumed.length, 0);
+  assert.equal(started[0].mode, "plan");
+});
+
+test("caller inheritance cannot elevate or escape the caller workspace", async () => {
+  const { call, consumed } = harness({ trustedCallerHosts: new Set(["opencode"]) });
+  const caller_context = { host: "opencode", mode: "plan", session_id: "session-1", cwd: "/work" };
+
+  await call("agent_start", { agent: "codex", prompt: "fix", mode: "default", caller_context, authorization: "auth_x" });
+  await call("agent_start", {
+    agent: "codex",
+    prompt: "fix elsewhere",
+    cwd: "/other",
+    mode: "default",
+    caller_context: { ...caller_context, mode: "default" },
+    authorization: "auth_y"
+  });
+
+  assert.deepEqual(consumed.map(({ token, cwd }) => ({ token, cwd })), [
+    { token: "auth_x", cwd: "/work" },
+    { token: "auth_y", cwd: "/other" }
+  ]);
 });
 
 const askResult = {
