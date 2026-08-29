@@ -54,6 +54,32 @@ whole team gets it:
 
     codex mcp add acp-team -- npx -y @medyll/acp-team
 
+**OpenCode, with caller-right inheritance.** Load the ACP Team package as an
+OpenCode plugin and explicitly trust that host adapter in the MCP child process:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@medyll/acp-team"],
+  "mcp": {
+    "acp-team": {
+      "type": "local",
+      "command": ["npx", "-y", "@medyll/acp-team"],
+      "enabled": true,
+      "environment": {
+        "ACP_TEAM_TRUSTED_CALLER_HOSTS": "opencode"
+      }
+    }
+  }
+}
+```
+
+This integration is model-independent. Any LLM running as OpenCode's `build`
+agent delegates with write-capable rights by default; `plan` stays read-only.
+The plugin injects the host context after model tool generation and overwrites
+any model-supplied value. Do not set `ACP_TEAM_TRUSTED_CALLER_HOSTS=opencode`
+unless the plugin is loaded in the same OpenCode host.
+
 **Any other MCP host.** Nothing here is host specific. Run
 `npx -y @medyll/acp-team` as a stdio server and you get the same tools.
 
@@ -87,7 +113,7 @@ acp-team usage report --period month
 `prompt` and `chat` default to the read-only `plan` mode. Passing `default` or
 `auto` is an explicit choice to allow workspace writes.
 
-Write access uses a short-lived token scoped to one agent, directory and mode:
+CLI write access uses a short-lived token scoped to one agent, directory and mode:
 
 ```sh
 acp-team authorize grant --agent codex --cwd . --mode default --for 15m --uses 1
@@ -220,7 +246,14 @@ Get a second opinion on code you just wrote:
 `mode: "plan"` is read-only. Use it whenever you want an opinion rather than an
 edit.
 
-Hand off a self-contained task and let the agent do the work:
+With a trusted host integration, omit `mode` to inherit the caller's effective
+rights. An explicit mode remains a callee override:
+
+```json
+{ "agent": "codex", "prompt": "Add a --dry-run flag to the migrate command, with a test." }
+```
+
+Without a trusted host context, the compatible token path remains available:
 
 ```json
 { "agent": "codex", "prompt": "Add a --dry-run flag to the migrate command, with a test.", "mode": "default", "authorization": "auth_..." }
@@ -331,11 +364,12 @@ entries are closed as `interrupted`; they are never falsely presented as resumed
 
 ### What the confirmations do and do not do
 
-Write-capable modes require a token issued outside the MCP tool surface by
-`acp-team authorize grant`. The persisted store contains only a hash and the
-scope metadata. This prevents a delegated model from manufacturing permission
-by guessing a public confirmation literal. The agent sandbox remains the final
-execution boundary.
+Write-capable modes are covered either by an equal-or-stronger caller context
+injected by an explicitly trusted host adapter, or by a token issued outside the
+MCP tool surface with `acp-team authorize grant`. The persisted token store
+contains only a hash and the scope metadata. Model-supplied caller contexts are
+ignored unless the bridge explicitly trusts the corresponding host integration.
+The agent sandbox remains the final execution boundary.
 
 ## Modes
 
@@ -346,10 +380,11 @@ execution boundary.
 | `plan` | ACP mode `plan`, read-only | `sandbox_mode="read-only"` |
 | `default` | ACP mode `default` | `sandbox_mode="workspace-write"` |
 | `auto` | ACP mode `auto` | same as `default` |
-When an MCP request omits `mode`, ACP Team now uses `plan` rather than an
-agent-specific write-capable default. `default` and `auto` require
-an `authorization` token scoped to the requested agent and directory. Unsandboxed execution is not exposed;
-keep `plan` for work that has not explicitly been authorized.
+When an MCP request omits `mode`, ACP Team inherits a trusted caller mode and
+otherwise falls back to `plan`. An explicit callee mode overrides inheritance.
+Moving from a read-only caller to `default` or `auto`, or leaving the caller's
+workspace, still requires an `authorization` token. Unsandboxed execution is
+not exposed.
 
 ## Models and settings
 
@@ -430,6 +465,8 @@ operations are deliberately not exposed.
 | `ACP_TEAM_TOOLS` | `core` | MCP tool surface: `core` exposes the 11 delegation/run tools; `full` also exposes configuration, usage/model/budget, Ollama and doctor tools |
 | `ACP_TEAM_LOG_LEVEL` | `info` | Diagnostic verbosity on stderr: `error`, `warn`, `info` or `debug` |
 | `ACP_TEAM_LOG_FORMAT` | `text` | Set to `json` for one structured log object per line |
+| `ACP_TEAM_TRUSTED_CALLER_HOSTS` | unset | Comma-separated host adapters allowed to inject inherited caller rights; currently `opencode` is bundled |
+| `ACP_TEAM_OPENCODE_PLAN_AGENTS` | `plan` | Comma-separated OpenCode agent ids whose delegated calls must remain read-only |
 | `OPENROUTER_MANAGEMENT_KEY` | unset | Management key used only by `usage_sync` to read OpenRouter credits and catalog |
 | `KIMI_BIN` | `kimi` | Kimi binary |
 | `KIMI_BRIDGE_MODEL` | agent default | Model for new Kimi sessions |

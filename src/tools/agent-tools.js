@@ -1,7 +1,17 @@
 import { z } from "zod";
 import { MODES } from "../agents/agent.js";
-import { authorizeMode, requiresWriteAuthorization } from "../security-policy.js";
+import { resolveDelegationAccess } from "../security/caller-context.js";
 import { jsonResult, progressReporter, render, textResult } from "./shared.js";
+
+const CallerContext = z
+  .object({
+    host: z.string().min(1),
+    mode: z.enum(MODES),
+    session_id: z.string().min(1),
+    cwd: z.string().min(1)
+  })
+  .optional()
+  .describe("Permission context injected by a trusted host adapter. Models must not populate this field themselves.");
 
 /** Delegation options every agent tool accepts, kept in one place so the
  *  blocking, supervised and fan-out entry points cannot drift apart. */
@@ -12,8 +22,15 @@ function delegationShape(AgentId) {
     session_id: z.string().optional().describe("Existing session/thread to continue."),
     new_session: z.boolean().optional().describe("Force a fresh session instead of reusing the one for this cwd."),
     model: z.string().optional().describe("Model override supported by the selected agent."),
-    mode: z.enum(MODES).optional().describe("Permission/sandbox mode: plan is read-only; default and auto allow workspace writes."),
-    authorization: z.string().optional().describe("Scoped token issued by `acp-team authorize grant`; required for write-capable modes."),
+    mode: z
+      .enum(MODES)
+      .optional()
+      .describe("Callee permission override. When omitted, inherit the trusted caller mode; without trusted context, fall back to plan."),
+    authorization: z
+      .string()
+      .optional()
+      .describe("Scoped token issued by `acp-team authorize grant`; needed only when write access is not covered by a trusted caller context."),
+    caller_context: CallerContext,
     thinking: z.enum(["low", "high", "max", "on"]).optional().describe("Reasoning effort (kimi only)."),
     options: z
       .record(z.union([z.string(), z.number(), z.boolean()]))
@@ -25,16 +42,24 @@ function delegationShape(AgentId) {
   };
 }
 
-export function registerAgentTools(server, { registry, runManager, usageManager, authorizationManager, journal, defaultCwd, log }) {
+export function registerAgentTools(server, { registry, runManager, usageManager, authorizationManager, journal, defaultCwd, trustedCallerHosts = new Set(), log }) {
   const AgentId = z.enum(registry.ids);
   const shape = delegationShape(AgentId);
+
+  const accessFor = (input, cwd = input.cwd || defaultCwd) =>
+    resolveDelegationAccess({
+      requestedMode: input.mode,
+      callerContext: input.caller_context,
+      cwd,
+      trustedHosts: trustedCallerHosts
+    });
 
   server.registerTool(
     "agent_ask",
     {
       title: "Ask a teammate agent",
       description:
-        "Delegate a task to another coding agent. The agent runs its own tools — file reads/writes, shell — inside the given working directory, and returns its final answer plus a summary of what it ran. Conversation state is kept per agent per working directory unless session_id or new_session is given.",
+        "Delegate a task to another agent. Available file and shell tools depend on that agent. A trusted host mode is inherited unless mode explicitly overrides it. Conversation state is kept per agent per working directory unless session_id or new_session is given.",
       inputSchema: {
         ...shape,
         return: z.enum(["summary", "full"]).default("summary").describe("Return the compact tool-call summary or the full tool-call list."),
@@ -43,8 +68,9 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
     },
     async (input, extra) => {
       const startedAt = Date.now();
-      const mode = authorizeMode(input.mode);
-      if (requiresWriteAuthorization(mode)) await authorizationManager.consume({ token: input.authorization, agent: input.agent, cwd: input.cwd || defaultCwd, mode });
+      const access = accessFor(input);
+      const mode = access.mode;
+      if (access.requiresAuthorization) await authorizationManager.consume({ token: input.authorization, agent: input.agent, cwd: input.cwd || defaultCwd, mode });
       const result = await registry.get(input.agent).ask({
         prompt: input.prompt,
         cwd: input.cwd || defaultCwd,
@@ -78,8 +104,9 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
       inputSchema: shape
     },
     async (input) => {
-      const mode = authorizeMode(input.mode);
-      if (requiresWriteAuthorization(mode)) await authorizationManager.consume({ token: input.authorization, agent: input.agent, cwd: input.cwd || defaultCwd, mode });
+      const access = accessFor(input);
+      const mode = access.mode;
+      if (access.requiresAuthorization) await authorizationManager.consume({ token: input.authorization, agent: input.agent, cwd: input.cwd || defaultCwd, mode });
       return jsonResult(
         runManager.start({
           agent: input.agent,
@@ -101,29 +128,31 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
     {
       title: "Ask several agents the same question",
       description:
-        "Send one prompt to several agents as supervised runs and return their run ids. Use it to compare how different agents approach the same problem, then read each result with agent_watch. Each run is subject to its agent's concurrency limit. In a write-capable mode every agent consumes one use of the token, so the authorization must cover all of them.",
+        "Send one prompt to several agents as supervised runs and return their run ids. Use it to compare how different agents approach the same problem, then read each result with agent_watch. Each run is subject to its agent's concurrency limit. A trusted caller context can cover the shared mode; otherwise every write-capable run consumes one token use.",
       inputSchema: {
         prompt: shape.prompt,
         agents: z.array(AgentId).min(2).max(6).describe("Agents to ask. Each one gets its own independent run."),
         cwd: shape.cwd,
         mode: shape.mode,
         authorization: shape.authorization,
+        caller_context: shape.caller_context,
         models: z
           .record(z.string())
           .optional()
           .describe("Per-agent model override, keyed by agent id. Agents without an entry use their default.")
       }
     },
-    async ({ prompt, agents, cwd, mode, authorization, models }) => {
-      const authorizedMode = authorizeMode(mode);
+    async ({ prompt, agents, cwd, mode, authorization, caller_context, models }) => {
       const unique = [...new Set(agents)];
       const workingDirectory = cwd || defaultCwd;
+      const access = accessFor({ cwd, mode, caller_context }, workingDirectory);
+      const authorizedMode = access.mode;
 
       // Authorize the fan-out as one transaction. A token scoped to a single
       // agent, or with fewer uses than there are agents, would otherwise let the
       // first run write while the rest were refused — a partial fan-out nobody
       // approved — and spend uses on the way to failing.
-      if (requiresWriteAuthorization(authorizedMode)) {
+      if (access.requiresAuthorization) {
         try {
           await authorizationManager.consumeMany(
             unique.map((agent) => ({ token: authorization, agent, cwd: workingDirectory, mode: authorizedMode }))
@@ -192,11 +221,12 @@ export function registerAgentTools(server, { registry, runManager, usageManager,
     {
       title: "Retry a retained run",
       description: "Retry a finished run still retained in memory. Restarted bridges cannot recover prompts because prompts are deliberately not journalled.",
-      inputSchema: { run_id: z.string(), authorization: z.string().optional() }
+      inputSchema: { run_id: z.string(), authorization: z.string().optional(), caller_context: CallerContext }
     },
-    async ({ run_id, authorization }) => {
+    async ({ run_id, authorization, caller_context }) => {
       const scope = runManager.retryScope(run_id);
-      if (requiresWriteAuthorization(scope.mode)) await authorizationManager.consume({ token: authorization, ...scope });
+      const access = accessFor({ mode: scope.mode, caller_context }, scope.cwd);
+      if (access.requiresAuthorization) await authorizationManager.consume({ token: authorization, ...scope });
       return jsonResult(runManager.retry(run_id));
     }
   );

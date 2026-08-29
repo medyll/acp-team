@@ -43,6 +43,7 @@ test("exposes only the core delegation and run controls by default", async () =>
     ]);
     const askSchema = response.tools.find((tool) => tool.name === "agent_ask").inputSchema.properties;
     assert.ok(askSchema.authorization);
+    assert.ok(askSchema.caller_context);
     assert.equal(askSchema.confirm_write, undefined);
     assert.equal(askSchema.return.default, "summary");
     const watchSchema = response.tools.find((tool) => tool.name === "agent_watch").inputSchema.properties;

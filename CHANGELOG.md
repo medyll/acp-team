@@ -4,6 +4,7 @@
 **Features:**
 - default to core tool surface
 - summarize synchronous agent runs
+- inherit trusted caller rights through the bundled OpenCode host adapter
 
 **Bug Fixes:**
 - scope clients to working directory

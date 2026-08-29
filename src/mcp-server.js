@@ -14,6 +14,7 @@ import { registerUsageTools } from "./tools/usage-tools.js";
 import { registerConfigTools } from "./tools/config-tools.js";
 import { registerOllamaTools } from "./tools/ollama-tools.js";
 import { createAuthorizationManager } from "./security/authorization-manager.js";
+import { trustedCallerHosts } from "./security/caller-context.js";
 import { registerSystemTools } from "./tools/system-tools.js";
 
 const DEFAULT_CWD = process.env.AGENT_BRIDGE_CWD || process.cwd();
@@ -45,7 +46,16 @@ const runManager = createRunManager({
 
 const server = new McpServer({ name: "acp-team", version: "1.0.0" });
 
-registerAgentTools(server, { registry, runManager, usageManager, authorizationManager, journal, defaultCwd: DEFAULT_CWD, log });
+registerAgentTools(server, {
+  registry,
+  runManager,
+  usageManager,
+  authorizationManager,
+  journal,
+  defaultCwd: DEFAULT_CWD,
+  trustedCallerHosts: trustedCallerHosts(),
+  log
+});
 if (TOOLS_MODE === "full") {
   registerUsageTools(server, { registry, usageManager });
   registerConfigTools(server, { configManager });
