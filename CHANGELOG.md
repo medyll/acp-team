@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.12] - 2026-09-06
+**Features:**
+- add audit report for portability and security improvements
+
+
+
 ## [1.0.11] - 2026-08-29
 **Bug Fixes:**
 - scope caller trust to trusted hosts, add opencode plugin
