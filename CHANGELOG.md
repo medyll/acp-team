@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.11] - 2026-08-29
+**Bug Fixes:**
+- scope caller trust to trusted hosts, add opencode plugin
+
+
+
 ## [1.0.10] - 2026-08-21
 **Features:**
 - report live agent progress
