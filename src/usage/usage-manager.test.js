@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createUsageManager } from "./usage-manager.js";
+import { JevRoutingError } from "./jev-routing-adapter.js";
 
 test("records measured usage and reports it for the current month", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
@@ -135,4 +136,78 @@ test("ratings and observed outcomes reorder recommendations", async () => {
   assert.equal(recommendation.ratings[0].averageRating, 5);
   const ratings = await manager.ratings({ agent: "opencode" });
   assert.equal(ratings.entries[0].note, "excellent");
+});
+
+test("shadow routing records a sanitized comparison while returning the heuristic recommendation", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
+  const task = "Simple rename in a private customer component";
+  const manager = createUsageManager({
+    dataDir,
+    routingProvider: "jev-shadow",
+    routingAdvisor: {
+      advise: async () => ({
+        profile: "standard",
+        profileConfidence: 0.72,
+        requiresWrite: 0.95,
+        complexity: 0.8,
+        needsClarification: 0.1,
+        distributions: {
+          profile: { cheap: 0.2, standard: 0.72, premium: 0.08 },
+          complexity: { 0: 0.3, 1: 0.6, 2: 0.1 }
+        },
+        confidence: { profile: 0.72, complexity: 0.6 },
+        latencyMs: 24,
+        usage: { inputTokens: 20, outputTokens: 4, totalTokens: 24 },
+        model: "jev-test"
+      })
+    }
+  });
+
+  const recommendation = await manager.recommend({ task, profile: "auto" });
+  assert.equal(recommendation.profile, "cheap", "shadow advice must not alter the public result");
+  assert.equal("routing" in recommendation, false, "the public response shape remains unchanged");
+
+  const raw = await readFile(manager.files.routingShadow, "utf8");
+  assert.equal(raw.includes(task), false);
+  assert.equal(raw.includes("private customer"), false);
+  const entry = JSON.parse(raw.trim());
+  assert.equal(entry.taskHash.length, 64);
+  assert.equal(entry.heuristicProfile, "cheap");
+  assert.equal(entry.jevProfile, "standard");
+  assert.equal(entry.errorCategory, null);
+});
+
+test("shadow routing failures fall back and record only an error category", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
+  const manager = createUsageManager({
+    dataDir,
+    routingProvider: "jev-shadow",
+    routingAdvisor: {
+      advise: async () => { throw new JevRoutingError("authentication", "secret provider detail"); }
+    }
+  });
+
+  const recommendation = await manager.recommend({ task: "Plan a compatibility migration", profile: "auto" });
+  assert.equal(recommendation.profile, "premium");
+  const raw = await readFile(manager.files.routingShadow, "utf8");
+  assert.equal(raw.includes("secret provider detail"), false);
+  assert.equal(JSON.parse(raw.trim()).errorCategory, "authentication");
+});
+
+test("explicit profiles never invoke the semantic routing advisor", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
+  let calls = 0;
+  const manager = createUsageManager({
+    dataDir,
+    routingProvider: "jev-shadow",
+    routingAdvisor: { advise: async () => { calls += 1; } }
+  });
+  const recommendation = await manager.recommend({ task: "Migration", profile: "standard" });
+  assert.equal(recommendation.profile, "standard");
+  assert.equal(calls, 0);
+});
+
+test("usage manager refuses active Jev routing", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "acp-team-usage-"));
+  assert.throws(() => createUsageManager({ dataDir, routingProvider: "jev" }), /not enabled/);
 });

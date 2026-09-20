@@ -467,6 +467,8 @@ operations are deliberately not exposed.
 | `ACP_TEAM_LOG_FORMAT` | `text` | Set to `json` for one structured log object per line |
 | `ACP_TEAM_TRUSTED_CALLER_HOSTS` | unset | Comma-separated host adapters allowed to inject inherited caller rights; currently `opencode` is bundled |
 | `ACP_TEAM_OPENCODE_PLAN_AGENTS` | `plan` | Comma-separated OpenCode agent ids whose delegated calls must remain read-only |
+| `ACP_TEAM_ROUTING_PROVIDER` | `heuristic` | Task classifier: `heuristic` or experimental `jev-shadow`; `jev` stays disabled until evaluation passes |
+| `TYPESAFE_API_KEY` | unset | Server-side TypeSafe credential used only when routing is `jev-shadow` |
 | `OPENROUTER_MANAGEMENT_KEY` | unset | Management key used only by `usage_sync` to read OpenRouter credits and catalog |
 | `KIMI_BIN` | `kimi` | Kimi binary |
 | `KIMI_BRIDGE_MODEL` | agent default | Model for new Kimi sessions |
@@ -506,6 +508,25 @@ or server exposes a stable JSON format.
 
 Provider quotas that cannot be queried are deliberately reported as `unknown`.
 ACP Team keeps reported costs distinct from calculated prices and estimates.
+
+### Jev shadow routing
+
+`ACP_TEAM_ROUTING_PROVIDER=jev-shadow` asks Jev to classify automatic model
+recommendations, but ACP Team still returns the current heuristic result. The
+adapter sends only the task description and four fixed questions. It does not
+send repository files, diffs, command output, configured model lists, budgets
+or authorization data.
+
+Each comparison appends one line to `.acp-team/routing-shadow.jsonl`. That line
+contains a SHA-256 task hash, both profile labels, probabilities, confidence,
+latency, token use and a coarse error category; it contains no task text or
+credential. Missing credentials, timeouts, malformed responses, authentication
+failures and rate limits all leave the recommendation unchanged.
+
+Run the four-case live check with `pnpm test:smoke:jev`. Run the provisional
+40-case corpus with `pnpm eval:jev`; its labels still need human review. Setting
+`ACP_TEAM_ROUTING_PROVIDER=jev` fails at startup because active Jev routing has
+not passed the activation conditions yet.
 
 ## Development
 

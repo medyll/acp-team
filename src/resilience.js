@@ -89,7 +89,9 @@ export async function fetchWithRetry(fetchImpl, url, options, {
 }
 
 function isRetryableStatus(status) {
-  return [408, 429, 500, 502, 503, 504].includes(status);
+  // Some providers use non-standard 5xx codes such as 529 for overload. Treat
+  // the whole server-error range as transient while keeping retries bounded.
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
 }
 
 function parseRetryAfter(value) {

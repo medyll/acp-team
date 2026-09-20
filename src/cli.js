@@ -7,6 +7,7 @@ import { runConfigure } from "./cli/configure-command.js";
 import { runInstaller } from "./cli/installer-command.js";
 import { createConfigManager } from "./config/config-manager.js";
 import { createUsageManager } from "./usage/usage-manager.js";
+import { routingOptionsFromEnvironment } from "./usage/jev-routing-adapter.js";
 import { runtimeFromEnvironment } from "./config/runtime-config.js";
 import { createAuthorizationManager } from "./security/authorization-manager.js";
 import { authorizeMode, requiresWriteAuthorization } from "./security-policy.js";
@@ -38,7 +39,12 @@ export async function main(argv, terminal = createTerminal()) {
     dataDir,
     timeoutMs: runtimeConfig.resilience.httpTimeoutMs,
     maxResponseBytes: runtimeConfig.resilience.maxResponseBytes,
-    retryOptions: { attempts: runtimeConfig.resilience.retryAttempts }
+    retryOptions: { attempts: runtimeConfig.resilience.retryAttempts },
+    ...routingOptionsFromEnvironment({
+      timeoutMs: runtimeConfig.resilience.httpTimeoutMs,
+      maxResponseBytes: runtimeConfig.resilience.maxResponseBytes,
+      retryOptions: { attempts: runtimeConfig.resilience.retryAttempts }
+    })
   });
   const authorizationManager = createAuthorizationManager({ dataDir });
   await usageManager.ensure();

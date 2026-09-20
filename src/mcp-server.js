@@ -7,6 +7,7 @@ import { createLogger } from "./logger.js";
 import { createRunManager } from "./runs/run-manager.js";
 import { createRunJournal } from "./runs/run-journal.js";
 import { createUsageManager } from "./usage/usage-manager.js";
+import { routingOptionsFromEnvironment } from "./usage/jev-routing-adapter.js";
 import { createConfigManager } from "./config/config-manager.js";
 import { runtimeFromEnvironment } from "./config/runtime-config.js";
 import { registerAgentTools } from "./tools/agent-tools.js";
@@ -32,7 +33,12 @@ const usageManager = createUsageManager({
   dataDir: DATA_DIR,
   timeoutMs: runtimeConfig.resilience.httpTimeoutMs,
   maxResponseBytes: runtimeConfig.resilience.maxResponseBytes,
-  retryOptions: { attempts: runtimeConfig.resilience.retryAttempts }
+  retryOptions: { attempts: runtimeConfig.resilience.retryAttempts },
+  ...routingOptionsFromEnvironment({
+    timeoutMs: runtimeConfig.resilience.httpTimeoutMs,
+    maxResponseBytes: runtimeConfig.resilience.maxResponseBytes,
+    retryOptions: { attempts: runtimeConfig.resilience.retryAttempts }
+  })
 });
 const authorizationManager = createAuthorizationManager({ dataDir: DATA_DIR });
 const journal = createRunJournal({ dataDir: DATA_DIR, onError: (error) => log.warn("run journal write failed", { error: error.message }) });

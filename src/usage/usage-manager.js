@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile, appendFile, rename, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { deadlineSignal, fetchWithRetry, readJsonResponse } from "../resilience.js";
+import { routingErrorCategory } from "./jev-routing-adapter.js";
 
 const DEFAULT_LEDGER_MAX_BYTES = 8 * 1024 * 1024;
 /**
@@ -50,10 +52,18 @@ export function createUsageManager({
   timeoutMs = 15_000,
   maxResponseBytes,
   retryOptions,
+  routingProvider = "heuristic",
+  routingAdvisor,
   ledgerMaxBytes = DEFAULT_LEDGER_MAX_BYTES,
   ledgerRetentionDays = DEFAULT_LEDGER_RETENTION_DAYS
 } = {}) {
   if (!dataDir) throw new Error("Usage manager requires a dataDir");
+  if (!["heuristic", "jev-shadow"].includes(routingProvider)) {
+    throw new Error(`Unsupported routing provider "${routingProvider}"; active Jev routing is not enabled.`);
+  }
+  if (routingProvider === "jev-shadow" && typeof routingAdvisor?.advise !== "function") {
+    throw new Error("jev-shadow routing requires an injected routingAdvisor");
+  }
   const files = {
     budgets: path.join(dataDir, "budgets.json"),
     models: path.join(dataDir, "models.json"),
@@ -63,7 +73,8 @@ export function createUsageManager({
     ledger: path.join(dataDir, "usage-ledger.jsonl"),
     archive: path.join(dataDir, "usage-ledger.archive.jsonl"),
     rollups: path.join(dataDir, "usage-rollups.json"),
-    ratings: path.join(dataDir, "model-ratings.jsonl")
+    ratings: path.join(dataDir, "model-ratings.jsonl"),
+    routingShadow: path.join(dataDir, "routing-shadow.jsonl")
   };
 
   async function ensure() {
@@ -193,7 +204,13 @@ export function createUsageManager({
       readJson(files.budgets, DEFAULT_BUDGETS),
       status({ period: "month" })
     ]);
-    const requested = profile === "auto" ? inferProfile(task) : profile;
+    const heuristicProfile = inferProfile(task);
+    const requested = profile === "auto" ? heuristicProfile : profile;
+    // Await the shadow call so its measurement is durable before returning, but
+    // keep `requested` tied to the heuristic throughout the experiment.
+    if (profile === "auto" && routingProvider === "jev-shadow") {
+      await recordRoutingShadow({ task, heuristicProfile });
+    }
     const candidates = (models.profiles?.[requested] ?? []).filter((candidate) => !models.disabled?.includes(candidate));
     const limit = budgets.profiles?.[requested]?.maxEstimatedCost ?? null;
     const blocked = current.budget.status === "blocked" && requested === "premium";
@@ -209,6 +226,43 @@ export function createUsageManager({
       maxEstimatedCost: limit,
       budget: current.budget
     };
+  }
+
+  /**
+   * Persist comparison data without task text or provider error details. A hash
+   * links repeat observations while keeping the original prompt out of telemetry.
+   */
+  async function recordRoutingShadow({ task, heuristicProfile }) {
+    const base = {
+      timestamp: now().toISOString(),
+      taskHash: createHash("sha256").update(String(task ?? ""), "utf8").digest("hex"),
+      heuristicProfile,
+      provider: "jev"
+    };
+    let entry;
+    try {
+      const advice = await routingAdvisor.advise(task);
+      entry = {
+        ...base,
+        jevProfile: advice.profile,
+        profileConfidence: advice.profileConfidence,
+        requiresWrite: advice.requiresWrite,
+        complexity: advice.complexity,
+        needsClarification: advice.needsClarification,
+        distributions: advice.distributions,
+        confidence: advice.confidence,
+        latencyMs: advice.latencyMs,
+        usage: advice.usage,
+        model: advice.model,
+        errorCategory: null
+      };
+    } catch (error) {
+      // Coarse categories are enough to measure fallback behavior and cannot
+      // leak response bodies, credentials, or task fragments into the ledger.
+      entry = { ...base, errorCategory: routingErrorCategory(error) };
+    }
+    await appendFile(files.routingShadow, `${JSON.stringify(entry)}\n`, "utf8");
+    return entry;
   }
 
   async function rate({ runId, agent, model, rating, note } = {}) {
@@ -389,5 +443,5 @@ function addUsage(total, entry) {
 function periodStart(period, date) { const result = new Date(date); result.setHours(0, 0, 0, 0); if (period === "week") result.setDate(result.getDate() - ((result.getDay() + 6) % 7)); if (period === "month") result.setDate(1); return result; }
 function nextPeriodStart(period, date) { const result = periodStart(period, date); if (period === "day") result.setDate(result.getDate() + 1); else if (period === "week") result.setDate(result.getDate() + 7); else result.setMonth(result.getMonth() + 1); return result; }
 function activePromotion(promotions = [], date) { return promotions.find((promotion) => !promotion.startsAt || (new Date(promotion.startsAt) <= date && (!promotion.expiresAt || new Date(promotion.expiresAt) > date))); }
-function inferProfile(task = "") { return /refactor|architecture|audit|migration|complex|large/i.test(task) ? "premium" : /typo|format|rename|simple|short/i.test(task) ? "cheap" : "standard"; }
+export function inferProfile(task = "") { return /refactor|architecture|audit|migration|complex|large/i.test(task) ? "premium" : /typo|format|rename|simple|short/i.test(task) ? "cheap" : "standard"; }
 function numericDifference(total, used) { return Number.isFinite(total) && Number.isFinite(used) ? total - used : null; }
