@@ -10,6 +10,11 @@ Kimi, Codex, OpenCode and Ollama adapters are included today. They are bundled
 implementations, not a closed support list: any LLM runtime or agent can join the
 team through an adapter implementing the shared contract.
 
+TypeSafe's Jev is included as an optional routing adviser. In `jev-shadow` mode,
+it classifies task text and records how its judgment differs from the built-in
+heuristic, while the heuristic still controls the returned recommendation. Jev
+cannot grant write access, bypass model allowlists or change budget policy.
+
 Transports can use ACP, a vendor CLI, a native HTTP API or another suitable
 protocol. ACP Team normalizes sessions, progress, cancellation, usage and results
 without requiring every LLM to speak the same protocol.
@@ -28,6 +33,11 @@ Ollama is optional. Install it from https://ollama.com/download, start it, and
 pull at least one model. Local API access needs no key:
 
     ollama pull qwen3-coder
+
+Jev needs no extra package because its server-side adapter ships with ACP Team.
+Set `TYPESAFE_API_KEY` and `ACP_TEAM_ROUTING_PROVIDER=jev-shadow` to measure it
+without changing live routing. Active `jev` mode remains disabled until its
+evaluation corpus has human-reviewed labels and passes the activation checks.
 
 The bridge itself needs no installation. Register it with your MCP host and
 `npx` fetches it on first use.
