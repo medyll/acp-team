@@ -49,13 +49,13 @@
     "eval:jev": "node src/usage/jev-evaluate.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "proper-lockfile": "4.1.2",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "packageManager": "pnpm@10.33.2",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.11.0"
+    "eslint": "^10.13.0"
   }
 }
