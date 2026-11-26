@@ -92,7 +92,13 @@ test("classifies stalled requests as timeouts", async () => {
     timeoutMs: 5,
     retryOptions: { attempts: 1 },
     fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      // The adapter's deadline timer is unref'd, as a real socket would keep the
+      // loop alive; hold it open here so the stalled request can reach its deadline.
+      const keepAlive = setInterval(() => {}, 1_000);
+      signal.addEventListener("abort", () => {
+        clearInterval(keepAlive);
+        reject(signal.reason);
+      }, { once: true });
     })
   });
   await assert.rejects(() => adapter.advise("Investigate an intermittent failure."), (error) => error.category === "timeout");

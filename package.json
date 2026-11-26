@@ -3,6 +3,10 @@
   "version": "1.0.12",
   "type": "module",
   "description": "Extensible MCP control plane for supervising heterogeneous LLM agents through one interface.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/medyll/acp-team.git"
+  },
   "keywords": [
     "mcp",
     "model-context-protocol",
