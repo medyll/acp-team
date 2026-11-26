@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.14] - 2026-11-26
+**CI/CD:**
+- dependency updates by Dependabot with verified auto-merge
+
+
+
 ## [1.0.13] - 2026-11-26
 **Features:**
 - add Jev shadow evaluation
