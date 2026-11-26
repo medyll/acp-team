@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.0.13] - 2026-11-26
+**Features:**
+- add Jev shadow evaluation
+
+**Bug Fixes:**
+- keep stalled-request test alive and publish via OIDC
+
+**Documentation:**
+- document Jev inclusion
+
+**Chores:**
+- update compatible dependencies
+- update compatible dependencies
+- update compatible dependencies
+- update compatible dependencies
+- update compatible dependencies
+- update compatible dependencies
+- update compatible dependencies
+- major dependency upgrades (.)
+- update dependencies within semver ranges
+- update dependencies
+
+
+
 ## [1.0.12] - 2026-09-06
 **Features:**
 - add audit report for portability and security improvements
